@@ -35,7 +35,7 @@ from ai.session_plan import (
 # TTS를 붙이기 전까지 모든 질문이 이 파일 하나를 가리킨다.
 SAMPLE_AUDIO_URL = "https://cue-dummy-assets.s3.ap-northeast-2.amazonaws.com/tts/sample.mp3"
 
-# 주질문 — 카테고리 8종에 하나씩. 문장은 docs/질문구조_세션진행_0장.md 13장에서 가져왔다.
+# 주질문 — 카테고리 8종에 하나씩. 문장은 docs/질문 유형.md 13장에서 가져왔다.
 MAIN_QUESTIONS: dict[str, str] = {
     "지원동기": "백엔드 개발 직무에 지원하신 이유를 말씀해 주세요.",
     "직무역량": "가장 자신 있는 기술 스택과 그 이유는 무엇인가요?",

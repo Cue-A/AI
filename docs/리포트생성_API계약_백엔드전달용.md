@@ -299,7 +299,7 @@ composing      리포트 조립
 | `overall.partial` | 실패한 축이 있는가 |
 | `axes.*.status` | `ok` \| `failed` |
 | `axes.*.score` | 실패 시 null |
-| `metrics` | 축별 세부 지표. **이번 주차에는 빈 객체** |
+| `metrics` | 축별 세부 지표. **이번에는 빈 객체** |
 | `evidence` | 감점·강점 근거 배열. 항상 존재 (비어 있을 수 있음) |
 | `axes.*.error_code` | `status`가 `failed`일 때만 나온다. `ok`·`skipped`에는 필드가 없다 |
 | `axes.*.reason` | `status`가 `skipped`일 때만 나온다 |
@@ -618,7 +618,7 @@ MEDIA_FETCH_FAILED    오디오·영상 다운로드 실패                  500
 
 ---
 
-## 11. 이번 주차에 확정되지 않는 것
+## 11. 이번에 확정되지 않는 것
 
 | 항목 | 확정 시기 |
 | --- | --- |
