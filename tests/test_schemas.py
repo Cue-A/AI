@@ -430,23 +430,62 @@ def test_계약서_6장_회사목록():
     assert items[0].industry == "종합건설 · 플랜트"
 
 
+SAMPLE_COMPANY = {
+    "company_id": "samsung_electronics",
+    "name": "삼성전자",
+    "industry": "전자 / 반도체 / 제조",
+    "values_format": "단어형",
+    "core_values": [
+        {"name": "열정", "indicator": None},
+        {"name": "창의혁신", "indicator": None},
+        {"name": "인간미·도덕성", "indicator": None},
+    ],
+    "job_requirements": {
+        "system_sw": ["시스템 운영에 필요한 소프트웨어 개발"],
+    },
+    "source_url": ["https://www.samsungcareers.com"],
+    "updated_at": "2026-08-16",
+    "verified": False,
+}
+
+
+def test_팀_인재상_스키마가_그대로_파싱된다():
+    record = CompanyRecord.model_validate(SAMPLE_COMPANY)
+
+    assert record.values_format == "단어형"
+    assert [v.name for v in record.core_values] == ["열정", "창의혁신", "인간미·도덕성"]
+    # 공식 행동지표가 없으면 비워둔다. 추정해서 채우지 않는다
+    assert all(v.indicator is None for v in record.core_values)
+    assert record.job_requirements == {"system_sw": ["시스템 운영에 필요한 소프트웨어 개발"]}
+    assert record.source_url == ["https://www.samsungcareers.com"]
+    assert record.verified is False
+
+
 def test_인재상은_응답에_노출되지_않는다():
-    """질문 생성에만 쓰는 내부 값이다. 계약서 6장 응답에는 없다."""
-    record = CompanyRecord.model_validate({
-        "company_id": "hyundai_enc", "name": "현대건설(주)",
-        "industry": "종합건설 · 플랜트", "verified": True,
-        "profile": "도전과 협업을 중시합니다",
-    })
-    assert record.profile == "도전과 협업을 중시합니다"
-    assert "profile" not in CompanyOut.model_fields
+    """질문 생성에만 쓰는 내부 값이다. 계약서 6장 응답에는 company_id·name·industry뿐."""
+    assert set(CompanyOut.model_fields) == {"company_id", "name", "industry"}
+    for field in ("core_values", "job_requirements", "values_format", "verified"):
+        assert field not in CompanyOut.model_fields, field
 
 
-def test_인재상은_없어도_된다():
-    """아직 실제 자료가 없어 전부 null이다."""
+@pytest.mark.parametrize("fmt", ["단어형", "행동원칙형", "혼합형"])
+def test_values_format은_3종만(fmt):
+    record = CompanyRecord.model_validate({**SAMPLE_COMPANY, "values_format": fmt})
+    assert record.values_format == fmt
+
+
+def test_알_수_없는_values_format은_거부한다():
+    with pytest.raises(ValidationError):
+        CompanyRecord.model_validate({**SAMPLE_COMPANY, "values_format": "서술형"})
+
+
+def test_인재상_없이도_파싱된다():
+    """수집 전인 기업도 목록에는 있을 수 있다."""
     record = CompanyRecord.model_validate({
         "company_id": "x", "name": "x", "industry": "x", "verified": True,
     })
-    assert record.profile is None
+    assert record.core_values == []
+    assert record.job_requirements is None
 
 
 def test_회사_응답에_verified가_노출되지_않는다():

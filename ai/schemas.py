@@ -216,14 +216,39 @@ class CompanyOut(BaseModel):
     industry: str
 
 
-class CompanyRecord(CompanyOut):
-    """ai/data/companies.json 한 줄. 서버 내부 전용이며 응답으로 나가지 않는다."""
+# 인재상이 제시된 형태. 프롬프트 조립 방식이 달라진다.
+#   단어형      가치가 단어·짧은 구로만 제시된다. 행동지표가 없어
+#               job_requirements가 없으면 질문이 갈리지 않는다
+#   행동원칙형  가치가 문장형 행동 지침으로 제시된다
+#   혼합형      단어 + 각 단어에 설명 문장이 붙는다
+ValuesFormat = Literal["단어형", "행동원칙형", "혼합형"]
 
+
+class CoreValue(BaseModel):
+    """핵심 가치 하나. 3~6개를 모은다.
+
+    indicator는 공식 문서에 있는 것만 적는다. 없으면 null로 두고 추정해 채우지 않는다.
+    """
+
+    name: str
+    indicator: Optional[str] = None
+
+
+class CompanyRecord(CompanyOut):
+    """ai/data/companies.json 한 줄. 서버 내부 전용이며 응답으로 나가지 않는다.
+
+    인재상 내용은 AI가 보관하고 백엔드는 company_id만 들고 다닌다 (계약서 9장).
+    """
+
+    values_format: Optional[ValuesFormat] = None
+    core_values: list[CoreValue] = Field(default_factory=list)
+    # 직무명을 키로 하는 요구역량. 등록 안 된 직무는 키 자체를 만들지 않는다.
+    job_requirements: Optional[dict[str, list[str]]] = None
+    source_url: list[str] = Field(default_factory=list)
+    updated_at: Optional[str] = None
+    # 공식 채용페이지에서 직접 확인했는가.
+    # false면 서비스에 쓰지 않는다. 목록에서 빼고 질문 생성에도 넣지 않는다.
     verified: bool
-    # 인재상. 질문 생성에만 쓰고 응답에는 담지 않는다.
-    # 계약서 9장 — 인재상 내용은 AI가 보관하고 백엔드는 company_id만 들고 다닌다.
-    # 아직 실제 자료가 없어 전부 null이며, null이면 직무만으로 질문을 만든다.
-    profile: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------

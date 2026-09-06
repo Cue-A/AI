@@ -86,7 +86,9 @@ def _company_profile(req: SessionCreateRequest) -> Optional[str]:
     직접 입력값이 company_id보다 우선한다 (계약서 2장).
     둘 다 없으면 None이고, 그러면 직무만으로 질문을 만든다.
     """
-    return req.company_profile_override or companies.profile_for(req.company_id)
+    return req.company_profile_override or companies.profile_for(
+        req.company_id, req.job_role
+    )
 
 
 def start_session(req: SessionCreateRequest) -> tuple[DummySession, str]:

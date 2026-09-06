@@ -187,23 +187,30 @@ def profile_passed(fake_llm):
     return fake_llm.generate.call_args.kwargs["company_profile"]
 
 
-def test_인재상이_없으면_직무만으로_만든다(client, auth, llm_mode, fake_llm):
-    """등록 기업에 인재상 자료가 아직 없다. 그래도 세션은 정상 진행된다."""
-    client.post("/ai/sessions", headers=auth,
-                json={**BODY, "company_id": "hyundai_enc"})
-    # 폴링해서 백그라운드가 끝나기를 기다린다
-    import time
-    for _ in range(40):
-        if fake_llm.generate.call_count:
-            break
-        time.sleep(0.02)
-
+def test_verified가_false면_인재상을_쓰지_않는다(client, auth, llm_mode, fake_llm):
+    """공식 채용페이지에서 확인되지 않은 내용으로 질문을 만들면
+    미확인 데이터가 서비스에 노출되는 셈이다."""
+    res = client.post("/ai/sessions", headers=auth,
+                      json={**BODY, "company_id": "samsung_electronics"})
+    poll_until_done(client, auth, res.json()["task_id"])
     assert profile_passed(fake_llm) is None
+
+
+def test_등록_직무가_없으면_추론하지_말라고_붙인다(client, auth, llm_mode, fake_llm):
+    """이게 없으면 LLM이 그 기업의 직무 요구역량을 그럴듯하게 지어낸다."""
+    res = client.post("/ai/sessions", headers=auth,
+                      json={**BODY, "company_id": "hyundai_enc", "job_role": "백엔드 개발"})
+    poll_until_done(client, auth, res.json()["task_id"])
+
+    profile = profile_passed(fake_llm)
+    assert "현대건설" in profile
+    assert "도전" in profile                    # 핵심 가치는 들어간다
+    assert "추론하지 말고" in profile            # 직무 요건은 지어내지 말라고 못박는다
 
 
 def test_직접_입력값이_company_id보다_우선한다(client, auth, llm_mode, fake_llm, monkeypatch):
     """계약서 2장 — company_profile_override가 있으면 company_id보다 우선한다."""
-    monkeypatch.setattr(companies, "profile_for", lambda cid: "등록된 인재상")
+    monkeypatch.setattr(companies, "profile_for", lambda cid, job=None: "등록된 인재상")
 
     res = client.post("/ai/sessions", headers=auth, json={
         **BODY, "company_id": "hyundai_enc",
@@ -214,15 +221,25 @@ def test_직접_입력값이_company_id보다_우선한다(client, auth, llm_mod
     assert profile_passed(fake_llm) == "직접 입력한 인재상"
 
 
-def test_company_id로_인재상을_찾아_반영한다(client, auth, llm_mode, fake_llm, monkeypatch):
-    """인재상 내용은 AI가 보관한다. 백엔드는 company_id만 보낸다. (계약서 9장)"""
-    monkeypatch.setattr(companies, "profile_for", lambda cid: f"{cid}의 인재상")
+def test_등록_직무가_있으면_요구역량을_넣는다(client, auth, llm_mode, fake_llm, monkeypatch):
+    """job_requirements의 키와 job_role이 맞으면 그 직무 요건을 함께 준다."""
+    from ai.schemas import CompanyRecord
+
+    record = CompanyRecord.model_validate({
+        "company_id": "acme", "name": "에이크미", "industry": "IT",
+        "values_format": "단어형", "verified": True,
+        "core_values": [{"name": "도전"}],
+        "job_requirements": {"backend": ["대규모 트래픽 환경에서의 안정성 확보"]},
+    })
+    monkeypatch.setattr(companies, "load_records", lambda: (record,))
 
     res = client.post("/ai/sessions", headers=auth,
-                      json={**BODY, "company_id": "hyundai_enc"})
+                      json={**BODY, "company_id": "acme", "job_role": "backend"})
     poll_until_done(client, auth, res.json()["task_id"])
 
-    assert profile_passed(fake_llm) == "hyundai_enc의 인재상"
+    profile = profile_passed(fake_llm)
+    assert "대규모 트래픽" in profile
+    assert "추론하지 말고" not in profile        # 자료가 있으니 붙이지 않는다
 
 
 def test_회사를_안_고르면_None(client, auth, llm_mode, fake_llm):
