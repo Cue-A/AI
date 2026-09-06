@@ -213,7 +213,7 @@ def generate_main_questions(
     return _collect(parsed, slots)
 
 
-def _log_usage(response, count: int) -> None:
+def _log_usage(response, count: int, kind: str = "주질문") -> None:
     """토큰 사용량을 남긴다. 비용이 예상과 맞는지 여기서 확인한다.
 
     출력 토큰에 thinking이 포함되며, 그것이 비용의 대부분이다.
@@ -227,8 +227,8 @@ def _log_usage(response, count: int) -> None:
         u.input_tokens * in_rate + cached * in_rate * 0.1 + u.output_tokens * out_rate
     ) / 1_000_000
     logger.info(
-        "주질문 %d개 · %s · effort=%s — input %s (캐시 읽기 %s) / output %s / 약 $%.4f",
-        count, name, effort(), u.input_tokens, cached, u.output_tokens, cost,
+        "%s %d개 · %s · effort=%s — input %s (캐시 읽기 %s) / output %s / 약 $%.4f",
+        kind, count, name, effort(), u.input_tokens, cached, u.output_tokens, cost,
     )
 
 
@@ -248,6 +248,111 @@ def _collect(parsed: GeneratedQuestions, slots: list[tuple[str, str]]) -> dict[s
     if missing:
         raise LlmError(f"생성되지 않은 카테고리가 있습니다: {missing}")
     return by_category
+
+
+# ---------------------------------------------------------------------------
+# 꼬리질문
+#
+# 이력서를 넣지 않는다. 두 가지 이유다.
+#   1. 꼬리질문은 직전 답변을 파고드는 것이다. 이력서를 주면 답변에 없는 내용을
+#      끌어와 묻게 되고, 그러면 "내 답변을 안 들었다"는 인상을 준다
+#   2. 이력서가 6,000 토큰쯤 되는데 세션당 5회 부르면 3만 토큰이 그냥 나간다
+# 이력서 기반 질문은 주질문의 몫이다.
+# ---------------------------------------------------------------------------
+
+FOLLOWUP_SYSTEM_PROMPT = """\
+당신은 채용 면접관입니다. 지원자의 직전 답변을 읽고 꼬리질문을 만듭니다.
+
+꼬리질문은 방금 들은 답변을 파고드는 질문입니다.
+새 주제를 열지 않습니다. 주제를 바꾸는 것은 주질문의 몫입니다.
+
+난이도
+{difficulty_guide}
+
+규칙
+- 직전 답변에서 출발합니다. 답변에 나온 말을 근거로 묻습니다.
+- 답변에서 이미 말한 것을 다시 묻지 않습니다.
+  지원자가 「그건 방금 말씀드렸는데요」라고 할 질문이면 실패입니다.
+- 위 대화에 실제로 나온 말만 근거로 삼습니다.
+  이력서에 무엇이 적혀 있는지, 지원자가 다른 자리에서 무엇을 했는지는 알 수 없습니다.
+  「이력서에는 ~라고 쓰셨는데」처럼 확인할 수 없는 것을 전제로 깔지 않습니다.
+- 앞서 이 주제에서 나온 질문과 겹치지 않게 합니다.
+- 한 질문에 한 가지만 묻습니다.
+  「A인가요, 아니면 B인가요」처럼 고르게 하지 않습니다.
+  예 · 아니오로 답하고 끝날 수 있는 질문도 피합니다.
+- 짧게 씁니다. 두 문장을 넘기지 않고 70자 안팎으로 씁니다.
+  음성으로 읽어주는 질문이라 길면 알아듣기 어렵습니다.
+- 한국어 존댓말로 씁니다.
+- 번호, 머리말, 따옴표를 붙이지 않고 질문 문장만 씁니다."""
+
+
+class Exchange(BaseModel):
+    """한 주제에서 오간 질문과 답변 한 쌍."""
+
+    question: str
+    answer: str
+
+
+class GeneratedFollowup(BaseModel):
+    text: str = Field(description="지원자에게 그대로 읽어줄 꼬리질문 문장")
+
+
+def _topic_lines(history: list[Exchange]) -> str:
+    return "\n\n".join(f"Q. {e.question}\nA. {e.answer}" for e in history)
+
+
+def generate_followup(
+    *,
+    history: list[Exchange],
+    difficulty: Difficulty,
+    persona: Persona,
+    job_role: str,
+    company_profile: Optional[str] = None,
+) -> str:
+    """마지막 답변을 파고드는 꼬리질문 하나.
+
+    history  이 주제에서 오간 대화. 주질문+답변으로 시작해 꼬리질문+답변이 이어진다
+             마지막 항목의 답변이 파고들 대상이다
+    """
+    if not history:
+        raise LlmError("꼬리질문을 만들려면 직전 답변이 필요합니다")
+    if not history[-1].answer.strip():
+        raise LlmError("직전 답변이 비어 있습니다")
+
+    system = FOLLOWUP_SYSTEM_PROMPT.format(difficulty_guide=DIFFICULTY_GUIDE)
+
+    parts = [f"지원 직무는 「{job_role}」입니다.", PERSONA_GUIDE[persona]]
+    if company_profile:
+        parts.append(f"지원 기업의 인재상입니다.\n{company_profile}")
+    parts.append("지금까지 이 주제에서 오간 대화입니다.\n\n" + _topic_lines(history))
+    parts.append(
+        f"마지막 답변을 파고드는 꼬리질문을 난이도 {difficulty}로 하나 만들어 주세요."
+    )
+
+    try:
+        response = _client().messages.parse(
+            model=model(),
+            max_tokens=MAX_TOKENS,
+            system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
+            messages=[{"role": "user", "content": "\n\n".join(parts)}],
+            output_config={"effort": effort()},
+            output_format=GeneratedFollowup,
+        )
+    except anthropic.APIStatusError as e:
+        raise LlmError(f"꼬리질문 생성 요청이 실패했습니다 (HTTP {e.status_code})") from e
+    except anthropic.APIConnectionError as e:
+        raise LlmError("꼬리질문 생성 서버에 연결하지 못했습니다") from e
+
+    if response.stop_reason == "refusal":
+        detail = getattr(response.stop_details, "category", None)
+        raise LlmError(f"꼬리질문 생성이 거부되었습니다 (category={detail})")
+
+    parsed = response.parsed_output
+    if parsed is None or not parsed.text.strip():
+        raise LlmError("꼬리질문 생성 결과가 비어 있습니다")
+
+    _log_usage(response, 1, kind="꼬리질문")
+    return parsed.text.strip()
 
 
 # ---------------------------------------------------------------------------

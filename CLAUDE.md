@@ -40,7 +40,7 @@ ai/
   session_plan.py     세션 구성 로직. 검증된 파일 — 아래 예외 외에는 수정 금지
   schemas.py          계약서의 요청 · 응답 Pydantic 모델
   dummy.py            고정 질문 텍스트, 세션 진행, 메모리 보관소
-  llm.py              Claude로 주질문 생성. 모델 · effort · 프롬프트
+  llm.py              Claude로 주질문 · 꼬리질문 생성. 모델 · effort · 프롬프트
   resume.py           이력서 다운로드 (PDF · Word · 텍스트)
   tasks.py            진짜 백그라운드 실행 (스레드풀)
   pipeline.py         세션 시작 흐름 — 더미/llm 분기, 인재상 반영
@@ -59,7 +59,7 @@ tests/
   test_report.py      리포트 생성 · 부분 실패 · 멱등성 · 회차 비교
   test_ops.py         운영 제약 — 워커 수 · 시크릿 가드 · 보관소 상한
   test_polling.py     processing 흉내 — 단계 진행 · progress
-  test_llm.py         이력서 로딩 · 주질문 생성 요청 · 실패 처리
+  test_llm.py         이력서 로딩 · 주질문 · 꼬리질문 생성 요청 · 실패 처리
   test_tasks.py       백그라운드 실행
   test_pipeline.py    세션 시작 흐름
 scripts/
@@ -71,6 +71,28 @@ README.md             백엔드 담당자용 curl 가이드
 **질문 생성 · 리포트 생성 두 계약 모두 완성되어 동작합니다.**
 `AI_MODE=llm`이면 주질문이 이력서를 읽고 실제로 생성됩니다.
 꼬리질문 · 되묻기 · verdict 판정은 답변 텍스트가 필요하므로 STT가 붙어야 가능합니다.
+
+### 꼬리질문 — 만들어 뒀지만 아직 연결되지 않았습니다
+
+`llm.generate_followup()`은 완성되어 있고 프롬프트도 실제 이력서 기반 대화로
+두 번 튜닝했습니다. 다만 흐름에 붙이지 않았습니다.
+
+계약서의 답변 제출 요청에는 `audio_url`만 있고 답변 텍스트가 없습니다.
+꼬리질문은 직전 답변을 읽고 만드는 것이라 텍스트 없이는 부를 수 없습니다.
+없는 입력을 흉내내서 붙이면 그 순간부터 가짜 질문이 나갑니다.
+
+**STT를 붙이는 사람이 할 일은 두 가지입니다.**
+
+```
+1. ai/dummy.py의 answer_length()를 STT 결과 기반으로 교체
+2. 주제별로 (질문 텍스트, 답변 텍스트) 쌍을 쌓아
+   llm.generate_followup(history=..., difficulty=..., persona=..., job_role=...)에 넘김
+   history의 마지막 항목이 파고들 대상입니다
+```
+
+`generate_followup`에는 이력서를 넣지 않습니다. 넣으면 답변에 없는 내용을
+끌어와 물어서 "내 답변을 안 들었다"는 인상을 줍니다. 이유는 `ai/llm.py`
+꼬리질문 섹션 주석에 적어 뒀습니다.
 
 ## 절대 하지 말 것
 
