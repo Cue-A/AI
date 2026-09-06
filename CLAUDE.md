@@ -40,6 +40,10 @@ ai/
   session_plan.py     세션 구성 로직. 검증된 파일 — 아래 예외 외에는 수정 금지
   schemas.py          계약서의 요청 · 응답 Pydantic 모델
   dummy.py            고정 질문 텍스트, 세션 진행, 메모리 보관소
+  llm.py              Claude로 주질문 생성. 모델 · effort · 프롬프트
+  resume.py           이력서 다운로드 (PDF · Word · 텍스트)
+  tasks.py            진짜 백그라운드 실행 (스레드풀)
+  pipeline.py         세션 시작 흐름 — 더미/llm 분기, 인재상 반영
   router.py           /ai/* 엔드포인트, 시크릿 헤더 검증
   errors.py           에러 응답 형식
   companies.py        회사 목록 (verified 필터)
@@ -55,11 +59,18 @@ tests/
   test_report.py      리포트 생성 · 부분 실패 · 멱등성 · 회차 비교
   test_ops.py         운영 제약 — 워커 수 · 시크릿 가드 · 보관소 상한
   test_polling.py     processing 흉내 — 단계 진행 · progress
+  test_llm.py         이력서 로딩 · 주질문 생성 요청 · 실패 처리
+  test_tasks.py       백그라운드 실행
+  test_pipeline.py    세션 시작 흐름
+scripts/
+  compare_models.py   같은 이력서로 모델을 바꿔 돌려 품질 비교
 Dockerfile            base / dummy / full 멀티스테이지
 README.md             백엔드 담당자용 curl 가이드
 ```
 
-**질문 생성 · 리포트 생성 두 계약 모두 더미로 완성되어 동작합니다.**
+**질문 생성 · 리포트 생성 두 계약 모두 완성되어 동작합니다.**
+`AI_MODE=llm`이면 주질문이 이력서를 읽고 실제로 생성됩니다.
+꼬리질문 · 되묻기 · verdict 판정은 답변 텍스트가 필요하므로 STT가 붙어야 가능합니다.
 
 ## 절대 하지 말 것
 
@@ -190,7 +201,15 @@ topic_total       max(계획된 주제 수, 지금까지 열린 주제 수)
 전체 실패 트리거   audio_url에 content_fail이 있으면 태스크가 status: error
 더미 점수         session_id + question_id 해시로 50~90. 같은 요청은 같은 점수
 DUMMY_POLL_TICKS  0이면 즉시 done. 올리면 그 횟수만큼 processing을 거친다
-                  백엔드 폴링 루프 검증용. 실제 서버가 붙으면 이 스위치는 사라진다
+                  백엔드 폴링 루프 검증용. dummy 모드 전용
+
+AI_MODE=llm 일 때
+  모델            claude-sonnet-5 (LLM_MODEL로 교체). 질문 생성에는 이걸로 충분하다
+  effort          medium (LLM_EFFORT로 교체). thinking 토큰이 비용을 좌우한다
+  호출 횟수        세션당 1회. 계획 토픽과 예비 토픽을 한 번에 만들어 둔다
+  재연습          호출하지 않는다. 1회차 주질문을 그대로 재생한다
+  프롬프트         ai/llm.py의 SYSTEM_PROMPT. 실제 이력서로 3회 튜닝했다
+                  규칙을 지우면 품질이 조용히 나빠진다. test_llm.py가 잠가둔다
 
 축마다 실패 처리가 다르다. 이것을 어기면 심각한 버그가 된다.
   content 실패   전체 실패. 리포트를 만들지 않고 CONTENT_FAILED를 남긴다

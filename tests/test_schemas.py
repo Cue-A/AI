@@ -430,6 +430,25 @@ def test_계약서_6장_회사목록():
     assert items[0].industry == "종합건설 · 플랜트"
 
 
+def test_인재상은_응답에_노출되지_않는다():
+    """질문 생성에만 쓰는 내부 값이다. 계약서 6장 응답에는 없다."""
+    record = CompanyRecord.model_validate({
+        "company_id": "hyundai_enc", "name": "현대건설(주)",
+        "industry": "종합건설 · 플랜트", "verified": True,
+        "profile": "도전과 협업을 중시합니다",
+    })
+    assert record.profile == "도전과 협업을 중시합니다"
+    assert "profile" not in CompanyOut.model_fields
+
+
+def test_인재상은_없어도_된다():
+    """아직 실제 자료가 없어 전부 null이다."""
+    record = CompanyRecord.model_validate({
+        "company_id": "x", "name": "x", "industry": "x", "verified": True,
+    })
+    assert record.profile is None
+
+
 def test_회사_응답에_verified가_노출되지_않는다():
     record = CompanyRecord.model_validate(
         {

@@ -119,7 +119,7 @@ def test_세션이_상한을_넘으면_오래된_것부터_지워진다(monkeypa
 
     ids = []
     for _ in range(8):
-        session, _ = dummy.create_session(question_count=3, persona="friendly")
+        session = dummy.create_session(question_count=3, persona="friendly")
         ids.append(session.session_id)
 
     assert len(dummy.SESSIONS) == 5

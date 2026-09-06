@@ -1,0 +1,287 @@
+"""세션 시작 흐름 — AI_MODE에 따라 더미와 LLM을 오간다.
+
+실제 API를 부르지 않는다. 이력서 다운로드와 질문 생성만 모킹하고,
+그 결과가 세션에 제대로 붙는지와 폴링이 계약대로 도는지를 본다.
+"""
+from unittest.mock import patch as mock_patch
+
+import pytest
+
+from ai import companies, dummy, llm, pipeline, resume
+from ai.llm import LlmError
+from ai.pipeline import main_question_slots
+from ai.resume import Resume, ResumeError
+
+BODY = {
+    "resume_file_url": "https://s3.../resume.pdf",
+    "job_role": "백엔드 개발",
+    "persona": "pressure",
+    "question_count": 6,
+}
+
+
+@pytest.fixture
+def llm_mode(monkeypatch):
+    monkeypatch.setenv("AI_MODE", "llm")
+
+
+@pytest.fixture
+def fake_llm():
+    """이력서 다운로드와 질문 생성을 가로챈다."""
+    generated = {}
+
+    def generate(*, slots, **kw):
+        # 요청받은 카테고리를 그대로 채워 준다
+        out = {c: f"[생성됨] {c} 질문입니다." for c, _ in slots}
+        generated.update(out)
+        return out
+
+    with mock_patch.object(resume, "fetch", return_value=Resume(text="이력서")) as fetch, \
+         mock_patch.object(llm, "generate_main_questions", side_effect=generate) as gen:
+        yield SimpleHolder(fetch=fetch, generate=gen, generated=generated)
+
+
+class SimpleHolder:
+    def __init__(self, **kw):
+        self.__dict__.update(kw)
+
+
+def poll_until_done(client, auth, task_id, limit=40):
+    """계약서대로 done이 될 때까지 폴링한다."""
+    seen = []
+    for _ in range(limit):
+        res = client.get(f"/ai/tasks/{task_id}", headers=auth)
+        assert res.status_code == 200, res.json()
+        body = res.json()
+        seen.append(body["status"])
+        if body["status"] in ("done", "error"):
+            return body, seen
+    raise AssertionError(f"끝나지 않았습니다: {seen}")
+
+
+# ---------------------------------------------------------------------------
+# 슬롯 계산
+# ---------------------------------------------------------------------------
+
+
+def test_계획된_토픽과_예비_토픽을_모두_생성한다():
+    session = dummy.create_session(question_count=9, persona="pressure")
+    slots = main_question_slots(session)
+
+    plan = session.runner.plan
+    categories = [c for c, _ in slots]
+    assert categories[: len(plan["categories"])] == plan["categories"]
+    assert categories[len(plan["categories"]) :] == plan["spare_categories"]
+
+    # 계획된 토픽은 각 토픽의 첫 난이도를 쓴다
+    for (_, difficulty), levels in zip(slots, plan["difficulty"]):
+        assert difficulty == levels[0]
+    # 예비 토픽은 L2로 열린다
+    assert all(d == "L2" for _, d in slots[len(plan["categories"]) :])
+    dummy.reset()
+
+
+def test_재연습은_생성하지_않는다(client, auth, llm_mode, fake_llm):
+    """1회차 주질문을 텍스트까지 그대로 재생하므로 LLM을 부를 이유가 없다."""
+    replay_log = [
+        {"type": "question", "text": "1회차 주질문입니다.", "category": "지원동기",
+         "difficulty": "L1", "is_spare_topic": False},
+        {"type": "question", "text": "두 번째 주질문입니다.", "category": "직무역량",
+         "difficulty": "L1", "is_spare_topic": False},
+        {"type": "followup", "difficulty": "L2"},
+    ]
+    res = client.post("/ai/sessions", headers=auth, json={
+        **BODY, "question_count": 3, "persona": "friendly",
+        "retry_of_session_id": "sess_first", "replay_log": replay_log,
+    })
+    assert res.status_code == 202
+    body, _ = poll_until_done(client, auth, res.json()["task_id"])
+
+    assert body["status"] == "done"
+    assert body["result"]["text"] == "1회차 주질문입니다."
+    assert body["result"]["is_replay"] is True
+    fake_llm.generate.assert_not_called()
+    fake_llm.fetch.assert_not_called()      # 이력서도 받을 필요가 없다
+
+
+# ---------------------------------------------------------------------------
+# 더미 모드는 그대로
+# ---------------------------------------------------------------------------
+
+
+def test_더미_모드는_LLM을_부르지_않는다(client, auth, fake_llm):
+    res = client.post("/ai/sessions", headers=auth, json=BODY)
+    body, _ = poll_until_done(client, auth, res.json()["task_id"])
+
+    assert body["status"] == "done"
+    assert "[생성됨]" not in body["result"]["text"]      # 고정 문장
+    fake_llm.generate.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# LLM 모드
+# ---------------------------------------------------------------------------
+
+
+def test_LLM_모드는_생성된_주질문이_나온다(client, auth, llm_mode, fake_llm):
+    res = client.post("/ai/sessions", headers=auth, json=BODY)
+    assert res.status_code == 202
+    started = res.json()
+
+    # 세션 정보는 즉시 나온다 — 생성이 끝나기를 기다리지 않는다
+    assert started["session_id"]
+    assert started["question_total"] == 6
+
+    body, _ = poll_until_done(client, auth, started["task_id"])
+    assert body["status"] == "done"
+    assert body["result"]["text"].startswith("[생성됨]")
+    assert body["result"]["type"] == "question"
+
+
+def test_예비_토픽_질문도_미리_만들어_둔다(client, auth, llm_mode, fake_llm):
+    """세션 도중에 예비 토픽이 들어와도 다시 생성하지 않는다."""
+    res = client.post("/ai/sessions", headers=auth,
+                      json={**BODY, "persona": "pressure"})
+    poll_until_done(client, auth, res.json()["task_id"])
+
+    session = dummy.SESSIONS[res.json()["session_id"]]
+    plan = session.runner.plan
+    for category in plan["categories"] + plan["spare_categories"]:
+        assert session.main_questions[category].startswith("[생성됨]")
+
+    assert fake_llm.generate.call_count == 1      # 호출은 한 번뿐
+
+
+def test_세션_전체를_생성된_질문으로_돈다(client, auth, llm_mode, fake_llm):
+    """부실하게만 답해 예비 토픽까지 투입시켜도 고정 문장이 새지 않는다."""
+    res = client.post("/ai/sessions", headers=auth, json=BODY)
+    sid = res.json()["session_id"]
+    body, _ = poll_until_done(client, auth, res.json()["task_id"])
+
+    asked = 0
+    for _ in range(30):
+        item = body["result"]
+        if item["type"] == "session_end":
+            break
+        if item["type"] == "question":
+            assert item["text"].startswith("[생성됨]"), item
+            asked += 1
+        answer = client.post(f"/ai/sessions/{sid}/answers", headers=auth, json={
+            "question_id": item["question_id"],
+            "audio_url": "https://s3.../ans_short.webm",
+            "video_url": None, "is_timeout": False,
+        })
+        body, _ = poll_until_done(client, auth, answer.json()["task_id"])
+
+    assert body["result"]["total_questions"] == 6
+    assert asked == 6          # 전부 주질문 (부실해서 꼬리질문이 안 나감)
+    assert fake_llm.generate.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# 인재상
+# ---------------------------------------------------------------------------
+
+
+def profile_passed(fake_llm):
+    return fake_llm.generate.call_args.kwargs["company_profile"]
+
+
+def test_인재상이_없으면_직무만으로_만든다(client, auth, llm_mode, fake_llm):
+    """등록 기업에 인재상 자료가 아직 없다. 그래도 세션은 정상 진행된다."""
+    client.post("/ai/sessions", headers=auth,
+                json={**BODY, "company_id": "hyundai_enc"})
+    # 폴링해서 백그라운드가 끝나기를 기다린다
+    import time
+    for _ in range(40):
+        if fake_llm.generate.call_count:
+            break
+        time.sleep(0.02)
+
+    assert profile_passed(fake_llm) is None
+
+
+def test_직접_입력값이_company_id보다_우선한다(client, auth, llm_mode, fake_llm, monkeypatch):
+    """계약서 2장 — company_profile_override가 있으면 company_id보다 우선한다."""
+    monkeypatch.setattr(companies, "profile_for", lambda cid: "등록된 인재상")
+
+    res = client.post("/ai/sessions", headers=auth, json={
+        **BODY, "company_id": "hyundai_enc",
+        "company_profile_override": "직접 입력한 인재상",
+    })
+    poll_until_done(client, auth, res.json()["task_id"])
+
+    assert profile_passed(fake_llm) == "직접 입력한 인재상"
+
+
+def test_company_id로_인재상을_찾아_반영한다(client, auth, llm_mode, fake_llm, monkeypatch):
+    """인재상 내용은 AI가 보관한다. 백엔드는 company_id만 보낸다. (계약서 9장)"""
+    monkeypatch.setattr(companies, "profile_for", lambda cid: f"{cid}의 인재상")
+
+    res = client.post("/ai/sessions", headers=auth,
+                      json={**BODY, "company_id": "hyundai_enc"})
+    poll_until_done(client, auth, res.json()["task_id"])
+
+    assert profile_passed(fake_llm) == "hyundai_enc의 인재상"
+
+
+def test_회사를_안_고르면_None(client, auth, llm_mode, fake_llm):
+    res = client.post("/ai/sessions", headers=auth, json={**BODY, "company_id": None})
+    poll_until_done(client, auth, res.json()["task_id"])
+    assert profile_passed(fake_llm) is None
+
+
+# ---------------------------------------------------------------------------
+# 실패
+# ---------------------------------------------------------------------------
+
+
+def test_이력서를_못_읽으면_RESUME_PARSE_FAILED(client, auth, llm_mode):
+    with mock_patch.object(resume, "fetch", side_effect=ResumeError("URL이 만료되었습니다")):
+        res = client.post("/ai/sessions", headers=auth, json=BODY)
+        assert res.status_code == 202       # 실패는 폴링 결과로 나간다
+        body, _ = poll_until_done(client, auth, res.json()["task_id"])
+
+    assert body["status"] == "error"
+    assert body["error_code"] == "RESUME_PARSE_FAILED"
+    assert "만료" in body["message"]
+    assert "result" not in body
+
+
+def test_질문_생성이_실패하면_LLM_FAILED(client, auth, llm_mode):
+    with mock_patch.object(resume, "fetch", return_value=Resume(text="이력서")), \
+         mock_patch.object(llm, "generate_main_questions",
+                           side_effect=LlmError("생성되지 않은 카테고리가 있습니다")):
+        res = client.post("/ai/sessions", headers=auth, json=BODY)
+        body, _ = poll_until_done(client, auth, res.json()["task_id"])
+
+    assert body["status"] == "error"
+    assert body["error_code"] == "LLM_FAILED"
+    assert "result" not in body
+
+
+def test_생성_중에_답변을_보내면_INVALID_QUESTION_ID(client, auth, llm_mode):
+    """폴링해서 done을 받은 뒤에 답변을 보내야 한다."""
+    import threading
+
+    release = threading.Event()
+
+    def slow_fetch(url):
+        release.wait(5)
+        return Resume(text="이력서")
+
+    with mock_patch.object(resume, "fetch", side_effect=slow_fetch), \
+         mock_patch.object(llm, "generate_main_questions", return_value={}):
+        res = client.post("/ai/sessions", headers=auth, json=BODY)
+        sid = res.json()["session_id"]
+
+        answer = client.post(f"/ai/sessions/{sid}/answers", headers=auth, json={
+            "question_id": "q_1", "audio_url": "u",
+            "video_url": None, "is_timeout": False,
+        })
+        assert answer.status_code == 400
+        assert answer.json()["error_code"] == "INVALID_QUESTION_ID"
+        assert "준비되지 않았습니다" in answer.json()["message"]
+
+        release.set()
+        poll_until_done(client, auth, res.json()["task_id"])

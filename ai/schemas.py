@@ -220,6 +220,10 @@ class CompanyRecord(CompanyOut):
     """ai/data/companies.json 한 줄. 서버 내부 전용이며 응답으로 나가지 않는다."""
 
     verified: bool
+    # 인재상. 질문 생성에만 쓰고 응답에는 담지 않는다.
+    # 계약서 9장 — 인재상 내용은 AI가 보관하고 백엔드는 company_id만 들고 다닌다.
+    # 아직 실제 자료가 없어 전부 null이며, null이면 직무만으로 질문을 만든다.
+    profile: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------

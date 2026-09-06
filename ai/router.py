@@ -6,7 +6,8 @@ GET   /ai/tasks/{task_id}                  작업 상태 조회 (폴링)
 GET   /ai/companies                        회사 목록
 POST  /ai/sessions/{session_id}/abort      세션 중단
 
-비동기는 흉내만 낸다. 즉시 계산해서 저장해두고 GET /ai/tasks에서 꺼내준다.
+더미는 즉시 계산해서 저장해두고 GET /ai/tasks에서 꺼내준다.
+AI_MODE가 dummy가 아니면 세션 시작이 실제로 백그라운드에서 돈다 (ai/pipeline.py).
 Celery와 Redis는 쓰지 않는다.
 """
 import os
@@ -14,7 +15,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, Header
 
-from ai import companies, dummy
+from ai import companies, dummy, pipeline
 from ai.errors import ApiError
 from ai.schemas import (
     AbortResponse,
@@ -69,12 +70,7 @@ def create_session(req: SessionCreateRequest) -> SessionCreateResponse:
             "retry_of_session_id가 있으면 replay_log를 함께 보내야 합니다",
         )
 
-    session, first_question = dummy.create_session(
-        question_count=req.question_count,
-        persona=req.persona,
-        replay_log=req.replay_log,
-    )
-    task_id = dummy.save_task(first_question)
+    session, task_id = pipeline.start_session(req)
     return SessionCreateResponse(
         session_id=session.session_id,
         task_id=task_id,
@@ -97,6 +93,14 @@ def submit_answer(session_id: str, req: AnswerSubmitRequest) -> AnswerSubmitResp
 
     if session.ended:
         raise ApiError(409, "SESSION_ENDED", "이미 종료된 세션입니다")
+
+    if session.current_question_id is None:
+        # 첫 질문이 아직 생성 중이다. 폴링해서 done을 받은 뒤 답변을 보내야 한다.
+        raise ApiError(
+            400,
+            "INVALID_QUESTION_ID",
+            "첫 질문이 아직 준비되지 않았습니다. task를 폴링해 주세요",
+        )
 
     if req.question_id != session.current_question_id:
         raise ApiError(

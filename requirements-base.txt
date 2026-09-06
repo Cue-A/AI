@@ -4,3 +4,10 @@ fastapi==0.115.6
 uvicorn[standard]==0.34.0
 pydantic==2.10.4
 boto3==1.35.90
+
+# 주질문 생성. AI_MODE가 dummy면 쓰이지 않지만, 이미지 하나로 두 모드를 오가려고
+# base에 둔다. 15MB 남짓이라 더미 이미지가 무거워지지 않는다.
+anthropic==1.2.0
+
+# 이력서 다운로드. anthropic이 끌고 오지만 우리가 직접 import하므로 명시한다.
+httpx2>=2.0,<3

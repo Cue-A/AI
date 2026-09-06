@@ -1,13 +1,15 @@
 # Cue AI 서버 — 더미
 
-AI 모의면접 서비스 Cue의 AI 파트 서버입니다. **아직 LLM · STT · TTS가 붙어 있지 않습니다.**
+AI 모의면접 서비스 Cue의 AI 파트 서버입니다.
+**주질문은 실제 LLM으로 생성되고, 꼬리질문 · 음성은 아직 고정값입니다.**
 
 백엔드와 프론트가 우리 서버를 기다리지 않고 폴링 · WebSocket push · 로그 저장 ·
 재연습 흐름을 검증할 수 있도록 API 껍데기를 먼저 띄운 것입니다.
 
 ```
-가짜   질문 텍스트, 음성 파일 URL, 발화 길이
-진짜   문항 수, 난이도 배분, 주제 구조, 되묻기, 예비 주제, 재연습
+진짜   주질문 (AI_MODE=llm), 문항 수, 난이도 배분, 주제 구조,
+       되묻기, 예비 주제, 재연습, 회차 비교
+가짜   꼬리질문 · 되묻기 문장, 음성 파일 URL, 발화 길이, 리포트 점수
 ```
 
 **세션 구성 로직은 실제 서비스와 동일한 코드가 돕니다.** 질문 문장만 고정값일 뿐,
@@ -317,6 +319,90 @@ POST /ai/sessions  →  202  task_id=task_001
 `error`도 마찬가지로 `result`가 없습니다.
 
 `done`이 된 뒤에는 몇 번을 더 폴링해도 계속 `done`이라 안전합니다.
+
+---
+
+## 두 가지 모드 — dummy와 llm
+
+`AI_MODE` 하나로 바뀝니다. **이미지는 같습니다.**
+
+```bash
+docker compose up -d                    # dummy — 질문이 고정 문장. 요금 0원
+AI_MODE=llm docker compose up -d        # llm   — 이력서를 읽고 주질문을 실제로 생성
+```
+
+| | dummy | llm |
+|---|---|---|
+| 주질문 | 카테고리별 고정 문장 | **이력서를 읽고 생성** |
+| 꼬리질문 · 되묻기 | 고정 문장 | 고정 문장 (STT가 붙어야 가능) |
+| 음성 | 샘플 mp3 | 샘플 mp3 (TTS 연결 전) |
+| 세션 구성 | 실제 로직 | 실제 로직 |
+| 응답 속도 | 즉시 | 세션 시작에 10~30초 |
+| 요금 | 0원 | 세션당 약 50원 |
+
+**백엔드가 받는 응답 형태는 완전히 같습니다.** 필드도 에러 코드도 그대로입니다.
+바뀌는 건 `text` 안의 문장과, 세션 시작이 실제로 시간이 걸린다는 점뿐입니다.
+
+### llm 모드에 필요한 것
+
+```bash
+cp .env.example .env
+```
+
+```
+CUEANDA_SHARED_SECRET=실제값      # llm 모드에서는 없으면 기동에 실패합니다
+AI_MODE=llm
+ANTHROPIC_API_KEY=sk-ant-...     # console.anthropic.com 에서 발급
+LLM_MODEL=claude-sonnet-5
+LLM_EFFORT=medium
+```
+
+`ANTHROPIC_API_KEY`를 발급하실 때 **Settings → Limits에서 월 지출 한도를 함께
+걸어두세요.** 실수로 루프를 돌려 크레딧을 태우는 사고를 막아줍니다.
+
+### 세션 시작이 이제 진짜로 오래 걸립니다
+
+llm 모드에서는 이력서 다운로드와 주질문 생성이 **백그라운드에서 실제로 돕니다.**
+
+```
+POST /ai/sessions   →  202 즉시   session_id · question_total 은 바로 옵니다
+GET  /ai/tasks/{id} →  {"status":"processing","stage":"generating"}
+                    →  {"status":"processing","stage":"tts"}
+                    →  {"status":"done","result":{...}}
+```
+
+**첫 질문이 나오기 전에 답변을 보내면 400 `INVALID_QUESTION_ID`입니다.**
+폴링해서 `done`을 받은 뒤에 보내주세요.
+
+```json
+{"error_code":"INVALID_QUESTION_ID",
+ "message":"첫 질문이 아직 준비되지 않았습니다. task를 폴링해 주세요"}
+```
+
+### 실패는 폴링 결과로 나갑니다
+
+```
+이력서를 못 받거나 못 읽음   status: error · RESUME_PARSE_FAILED
+주질문 생성 실패             status: error · LLM_FAILED
+```
+
+이력서는 **PDF · Word(.docx) · 텍스트**를 받습니다. PDF가 결과가 가장 좋습니다
+(레이아웃과 표까지 읽힙니다). 한글(.hwp)은 지원하지 않으니 업로드 단계에서
+`accept=".pdf,.docx,.txt"`로 막아주세요.
+
+### 비용을 아끼는 장치
+
+```
+세션당 호출 1회      계획 토픽과 예비 토픽 주질문을 한 번에 만들어 둡니다
+재연습은 호출 0회    1회차 주질문을 텍스트까지 그대로 재생하므로 부를 이유가 없습니다
+프롬프트 캐싱        이력서와 시스템 프롬프트에 캐시 지점을 둡니다
+```
+
+호출할 때마다 토큰과 대략적인 비용이 로그에 남습니다.
+
+```
+주질문 8개 · claude-sonnet-5 · effort=medium — input 7,032 (캐시 읽기 0) / output 1,840 / 약 $0.0325
+```
 
 ---
 
@@ -980,7 +1066,7 @@ python -m pytest -q
 ```
 
 ```
-2198 passed in 20s
+2258 passed in 40s
 ```
 
 | 파일 | 내용 |
@@ -991,14 +1077,17 @@ python -m pytest -q
 | `tests/test_report.py` | 리포트 생성 · 부분 실패 · 멱등성 · 회차 비교 |
 | `tests/test_ops.py` | 운영 제약 — 워커 수 · 시크릿 가드 · 보관소 상한 |
 | `tests/test_polling.py` | processing 흉내 — 단계 진행 · progress · result 부재 |
+| `tests/test_llm.py` | 이력서 로딩(PDF · Word) · 주질문 생성 요청 · 실패 처리 |
+| `tests/test_tasks.py` | 백그라운드 실행 — 진행 단계 · 실패 · 동시성 |
+| `tests/test_pipeline.py` | 세션 시작 흐름 — 더미/llm 분기 · 인재상 · 실패 |
 
 시나리오 테스트는 FastAPI TestClient로 실제 HTTP 요청을 보냅니다.
 
 ### Docker
 
 ```bash
-docker build --target dummy -t cue-ai:dummy .   # 296MB
-docker build --target full  -t cue-ai:full  .   # 923MB
+docker build --target dummy -t cue-ai:dummy .   # 319MB
+docker build --target full  -t cue-ai:full  .   # 946MB
 ```
 
 ```
@@ -1023,6 +1112,10 @@ ai/
   router.py            /ai/* 엔드포인트, 시크릿 헤더 검증
   schemas.py           질문 생성 계약의 요청 · 응답 모델
   dummy.py             고정 질문 텍스트, 세션 진행, 메모리 보관소
+  llm.py               Claude로 주질문 생성
+  resume.py            이력서 다운로드 (PDF · Word · 텍스트)
+  tasks.py             백그라운드 실행
+  pipeline.py          세션 시작 흐름 — 더미/llm 분기
   report_router.py     리포트 엔드포인트
   report_schemas.py    리포트 생성 계약의 요청 · 응답 모델
   report_dummy.py      점수 생성, 축 재정규화, 회차 비교

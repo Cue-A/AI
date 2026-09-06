@@ -163,7 +163,7 @@ def pending(final, stages: tuple[str, ...], with_progress: bool = False):
 def read_task(task_id: str):
     """폴링 한 번. 진행 중이면 processing을, 끝났으면 최종 응답을 돌려준다."""
     task = TASKS.get(task_id)
-    if isinstance(task, PendingTask):
+    if task is not None and hasattr(task, "poll"):
         return task.poll()
     return task
 
@@ -212,6 +212,14 @@ class DummySession:
         self.ended = False
         self.aborted = False
 
+        # 카테고리별 주질문 문장. 기본은 고정 문장이고, AI_MODE가 dummy가 아니면
+        # 세션 시작 작업이 이력서를 읽고 만든 문장으로 덮어쓴다.
+        self.main_questions: dict[str, str] = dict(MAIN_QUESTIONS)
+
+    def attach_main_questions(self, generated: dict[str, str]) -> None:
+        """생성된 주질문을 붙인다. 빠진 카테고리는 고정 문장이 남는다."""
+        self.main_questions.update({k: v for k, v in generated.items() if v})
+
     # ---------- 내부 ----------
     @property
     def topic_total(self) -> int:
@@ -229,7 +237,10 @@ class DummySession:
         if item["type"] == "reask":
             return REASK_QUESTION
         if item["type"] == "question":
-            return MAIN_QUESTIONS[item["category"]]
+            # 생성에 실패했거나 예상 못 한 카테고리면 고정 문장으로 버틴다.
+            # 세션 중간에 KeyError로 죽는 것보다 낫다.
+            category = item["category"]
+            return self.main_questions.get(category) or MAIN_QUESTIONS[category]
         return FOLLOWUP_QUESTIONS[item["difficulty"]]
 
     def _to_result(self, item: dict) -> Union[QuestionResult, SessionEndResult]:
@@ -364,14 +375,24 @@ def reset() -> None:
     TASKS.clear()
 
 
-def save_task(result: Union[QuestionResult, SessionEndResult]) -> str:
-    """비동기 흉내 — 즉시 계산한 결과를 done 상태로 저장해 두고 task_id만 돌려준다."""
+def register_task(pollable) -> str:
+    """폴링 가능한 것을 보관소에 넣고 task_id를 돌려준다.
+
+    pollable은 최종 응답 모델이거나 poll()을 가진 객체다.
+      PendingTask     더미의 processing 흉내 (DUMMY_POLL_TICKS)
+      BackgroundTask  실제로 백그라운드에서 도는 작업 (ai/tasks.py)
+    """
     task_id = _new_task_id()
-    TASKS[task_id] = pending(
-        TaskDoneResponse(status="done", result=result), QUESTION_STAGES
-    )
+    TASKS[task_id] = pollable
     evict_oldest(TASKS, MAX_TASKS)
     return task_id
+
+
+def save_task(result: Union[QuestionResult, SessionEndResult]) -> str:
+    """즉시 계산한 결과를 done 상태로 저장해 두고 task_id만 돌려준다."""
+    return register_task(
+        pending(TaskDoneResponse(status="done", result=result), QUESTION_STAGES)
+    )
 
 
 def create_session(
@@ -379,8 +400,12 @@ def create_session(
     question_count: int,
     persona: Persona,
     replay_log: Optional[list[ReplayLogItem]] = None,
-) -> tuple[DummySession, QuestionResult]:
-    """세션을 만들고 첫 주질문까지 뽑는다."""
+) -> DummySession:
+    """세션을 만든다. 첫 주질문은 뽑지 않는다.
+
+    주질문 생성이 LLM을 타면 10~30초가 걸리므로 세션만 먼저 만들어 두고,
+    첫 질문은 백그라운드 작업이 뽑는다. 흐름은 ai/pipeline.py에 있다.
+    """
     session_id = _new_session_id()
 
     if is_replayable(replay_log, question_count):
@@ -402,4 +427,4 @@ def create_session(
     )
     SESSIONS[session_id] = session
     evict_oldest(SESSIONS, MAX_SESSIONS)
-    return session, session.start()
+    return session

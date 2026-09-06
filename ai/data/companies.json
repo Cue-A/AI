@@ -3,18 +3,21 @@
     "company_id": "hyundai_enc",
     "name": "현대건설(주)",
     "industry": "종합건설 · 플랜트",
-    "verified": true
+    "verified": true,
+    "profile": null
   },
   {
     "company_id": "kb_bank",
     "name": "KB국민은행",
     "industry": "은행 · 금융",
-    "verified": true
+    "verified": true,
+    "profile": null
   },
   {
     "company_id": "samsung_sds",
     "name": "삼성에스디에스(주)",
     "industry": "IT 서비스 · 물류",
-    "verified": false
+    "verified": false,
+    "profile": null
   }
 ]
