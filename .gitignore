@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# 가상환경
+.venv/
+venv/
+env/
+
+# 환경변수 — .env.example만 커밋한다
+.env
+.env.local
+
+# 에디터 · OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 실제 모델을 붙일 때 생기는 것들
+*.mp3
+*.wav
+*.webm
+*.mp4
+models/

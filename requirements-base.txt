@@ -1,0 +1,6 @@
+# 더미와 실제 모드가 공통으로 쓰는 것만 넣는다.
+# torch 같은 무거운 라이브러리는 requirements-full.txt로 간다.
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+pydantic==2.10.4
+boto3==1.35.90
