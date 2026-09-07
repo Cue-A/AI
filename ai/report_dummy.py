@@ -52,9 +52,30 @@ OFFTOPIC_MARKER = "offtopic"
 
 # 적절성 게이트 — 내용 관련성이 임계값 미만이면 총점에 상한을 씌운다. (계약서 5장)
 # 값은 잠정이며 앵커 답변 세트로 튜닝한다. 바뀌어도 응답 구조는 그대로다.
-GATE_THRESHOLD = 30
-GATE_CAP = 40
+GATE_SEVERE_THRESHOLD = 30
+GATE_PARTIAL_THRESHOLD = 50
+GATE_SEVERE_CAP = 40
+GATE_PARTIAL_CAP = 70
 GATE_REASON = "content_relevance_low"
+# ---------------------------------------------------------------------------
+# 유틸
+# ---------------------------------------------------------------------------
+
+
+def score_for(*parts: str) -> int:
+    """같은 입력이면 항상 같은 점수가 나온다. 50~90 범위.
+
+    백엔드가 같은 리포트를 여러 번 요청해도 값이 흔들리지 않아야
+    QA 테스트가 편하다. 실제 서버에서는 LLM과 CV 분석 결과로 대체된다.
+    """
+    digest = hashlib.sha256("|".join(parts).encode("utf-8")).digest()
+    return 50 + digest[0] % 41
+
+
+def offtopic_score_for(*parts: str) -> int:
+    """주제 이탈 답변의 내용 점수. 10~29로 게이트 임계(30) 아래로 둔다."""
+    digest = hashlib.sha256("|".join(parts).encode("utf-8")).digest()
+    return 10 + digest[0] % 20
 
 # 최근 3회차 변화가 이 값 미만이면 정체로 본다.
 STALLED_THRESHOLD = 3
@@ -82,16 +103,22 @@ def offtopic_score_for(*parts: str) -> int:
 
 
 def apply_gate(overall_score: int, content_score: Optional[int]) -> tuple[int, bool, Optional[str]]:
-    """적절성 게이트. 계약서 5장.
+    """적절성 게이트.
 
-    주제에서 벗어난 유창한 답변이 말하기·시선 점수만으로 높은 총점을 받는 것을
-    막는다. 내용 관련성이 임계값 미만이면 총점에 상한을 씌운다.
+    주제에서 벗어난 답변일 때 유창함 등으로 점수를 받는 것을 막는다.
+    세트 1 A(완전 이탈) -> Severe Cap (40점)
+    세트 2 D(부분 이탈) -> Partial Cap (70점)
 
     반환값은 (총점, gated, gate_reason)이다.
     """
-    if content_score is None or content_score >= GATE_THRESHOLD:
+    if content_score is None or content_score >= GATE_PARTIAL_THRESHOLD:
         return overall_score, False, None
-    return min(overall_score, GATE_CAP), True, GATE_REASON
+    
+    if content_score < GATE_SEVERE_THRESHOLD:
+        return min(overall_score, GATE_SEVERE_CAP), True, GATE_REASON
+    
+    # Partial off-topic
+    return min(overall_score, GATE_PARTIAL_CAP), True, GATE_REASON
 
 
 def _now() -> str:
