@@ -406,7 +406,7 @@
     "verified": true
   },
   {
-    "company_id": "kakko_mobility",
+    "company_id": "kakao_mobility",
     "name": "카카오모빌리티",
     "industry": "모빌리티/플랫폼",
     "values_format": "행동원칙형",
@@ -438,7 +438,7 @@
   {
     "company_id": "lg_electronic",
     "name": "LG전자",
-    "industry": "모빌리티/플랫폼",
+    "industry": "가전 · 전자기기",
     "values_format": "행동원칙형",
     "core_values": [
       {
@@ -782,10 +782,6 @@
     "values_format": "혼합형",
     "core_values": [
       {
-        "name": "회사의 비전과 미션을 이해하고 핵심가치를 실천하는 사람",
-        "indicator": "대한항공이 찾는 인재의 전체 상. 아래 세 가지를 실천하는 사람"
-      },
-      {
         "name": "Professional & Responsible",
         "indicator": "전문성을 바탕으로 노력과 책임을 다하는 사람"
       },
@@ -882,6 +878,6 @@
       "https://kakaopay.career.greetinghr.com/ko/culture"
     ],
     "updated_at": "2026-08-18",
-    "verified": true
+    "verified": false
   }
 ]

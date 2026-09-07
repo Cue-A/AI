@@ -36,6 +36,7 @@ docs/                 계약서와 설계 문서. 이것이 스펙입니다
   질문 유형.md
   계약서_변경사항.md                    백엔드 전달용. 1주차에 바뀐 것
   백엔드_요청사항.md                    백엔드 전달용. P0 / P1 / 배포
+  기업목록_프론트전달용.md              프론트 전달용. 기업 선택 UI
 ai/
   session_plan.py     세션 구성 로직. 검증된 파일 — 아래 예외 외에는 수정 금지
   schemas.py          계약서의 요청 · 응답 Pydantic 모델
@@ -62,6 +63,7 @@ tests/
   test_llm.py         이력서 로딩 · 주질문 · 꼬리질문 생성 요청 · 실패 처리
   test_tasks.py       백그라운드 실행
   test_pipeline.py    세션 시작 흐름
+  test_companies.py   인재상 데이터 — 파싱 잔재 · 스키마
 scripts/
   compare_models.py   같은 이력서로 모델을 바꿔 돌려 품질 비교
 Dockerfile            base / dummy / full 멀티스테이지
