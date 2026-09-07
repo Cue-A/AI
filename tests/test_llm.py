@@ -276,6 +276,12 @@ def test_꼬리질문_프롬프트에_규칙이_남아_있다():
         assert rule in llm.FOLLOWUP_SYSTEM_PROMPT, rule
 
 
+def test_주질문_프롬프트에_길이_규칙이_있다():
+    """없으면 100자가 넘는 질문이 나온다. 음성으로 읽어주면 못 알아듣는다."""
+    for rule in ("90자 안팎", "음성으로 읽어주는 질문이라", "뒤엣것만 남깁니다"):
+        assert rule in llm.SYSTEM_PROMPT, rule
+
+
 def test_프롬프트에_규칙이_남아_있다():
     """실수로 지워지면 질문 품질이 조용히 나빠진다. 여기서 잡는다.
 
