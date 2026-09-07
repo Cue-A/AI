@@ -1,0 +1,31 @@
+# 더미 서버 기동
+#
+#   docker compose up --build
+#   curl http://localhost:8000/health
+#
+# 실제 모델을 붙일 때는 target을 full로 바꾼다.
+
+services:
+  ai:
+    build:
+      context: .
+      target: dummy
+    image: cue-ai:dummy
+    container_name: cue-ai-dummy
+    ports:
+      - "8000:8000"
+    environment:
+      # 백엔드가 X-Cueanda-Secret 헤더에 넣어 보내는 값.
+      # .env 파일이나 셸 환경변수로 덮어쓸 수 있다. .env.example 참고.
+      CUEANDA_SHARED_SECRET: ${CUEANDA_SHARED_SECRET:-dummy-secret}
+      # dummy면 고정 문장, llm이면 이력서를 읽고 주질문을 실제로 생성한다.
+      AI_MODE: ${AI_MODE:-dummy}
+      # 폴링을 몇 번 해야 done이 되는가. 0이면 즉시 done.
+      # 백엔드 폴링 루프를 검증하려면 2~3으로 올려서 쓰세요. dummy 모드 전용.
+      DUMMY_POLL_TICKS: ${DUMMY_POLL_TICKS:-0}
+
+      # AI_MODE=llm 일 때만 쓰인다. .env.example 참고.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      LLM_MODEL: ${LLM_MODEL:-claude-sonnet-5}
+      LLM_EFFORT: ${LLM_EFFORT:-medium}
+    restart: unless-stopped

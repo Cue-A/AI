@@ -1,0 +1,16 @@
+.git
+.gitignore
+__pycache__
+*.py[cod]
+.pytest_cache
+.venv
+venv
+docs
+tests
+pytest.ini
+requirements-dev.txt
+README.md
+CLAUDE.md
+docker-compose.yml
+Dockerfile
+.dockerignore

@@ -1,0 +1,2 @@
+# 실제 모델을 붙일 때 채운다. 지금은 비어 있다.
+# 예정: openai-whisper / faster-whisper, TTS 클라이언트, LLM 클라이언트
