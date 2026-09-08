@@ -56,6 +56,7 @@ ai/
   report_router.py    리포트 엔드포인트
   report_schemas.py   리포트 생성 계약의 요청 · 응답 모델
   report_dummy.py     점수 생성, 축 재정규화, 회차 비교
+  report_pipeline.py  리포트 흐름 — 전사 후 조립. 더미/llm 분기
 main.py               FastAPI 진입점, 예외 핸들러, /health · /ready
 tests/
   test_schemas.py     계약서 JSON 예시 파싱
@@ -68,6 +69,7 @@ tests/
   test_tasks.py       백그라운드 실행
   test_pipeline.py    세션 시작 · 답변 처리 흐름
   test_companies.py   인재상 데이터 — 파싱 잔재 · 스키마
+  test_report_pipeline.py  리포트 전사 흐름 · 채점 이음매
 scripts/
   compare_models.py   같은 이력서로 모델을 바꿔 돌려 품질 비교
 Dockerfile            base / dummy / full 멀티스테이지
@@ -104,8 +106,26 @@ AI_MODE=llm     ai/answers.py가 오디오를 내려받아 ai/stt.py로 전사�
 ```
 verdict 2단계    LLM 판정. 일관성 검증이 끝나야 켠다. 지금은 항상 None
 내용 채점        report_dummy의 점수가 해시다. 초안은 docs/내용채점_프롬프트_초안.md
-리포트 STT      리포트가 답변 오디오를 아직 보지 않는다. B의 캐시를 재사용해야 한다
 ```
+
+### 내용 채점을 붙이는 자리
+
+리포트는 llm 모드에서 답변을 전사한 뒤 조립합니다. 전사는 세션 진행 중에
+이미 한 번 했으므로 `ai/stt.py`의 캐시에서 나옵니다. 두 번 전사하면
+GPU 사용 시간이 두 배가 됩니다.
+
+D가 할 일은 함수 하나를 꽂는 것입니다.
+
+```python
+def scorer(question_text: str, answer_text: str) -> int:   # 0~100
+    ...
+
+report_dummy.CONTENT_SCORER = scorer
+```
+
+꽂으면 그때부터 게이트가 진짜 답변을 보고 걸립니다. 꽂기 전에는 해시
+더미가 쓰이고, 백엔드가 쓰던 offtopic · partial 트리거도 그대로 돕니다.
+채점이 터져도 리포트 전체를 날리지 않고 더미 점수로 이어갑니다.
 
 되묻기도 답변을 읽고 만듭니다. 무엇이 빠졌는지 짚어 주지 않으면
 지원자가 두 번째에도 같은 대답을 하기 때문입니다.

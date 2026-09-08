@@ -7,6 +7,7 @@ LLM · STT · 시선 분석을 호출하지 않는다.
 """
 import hashlib
 import itertools
+import logging
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -69,7 +70,18 @@ GATE_SEVERE_THRESHOLD = 30
 GATE_PARTIAL_THRESHOLD = 50
 GATE_SEVERE_CAP = 40
 GATE_PARTIAL_CAP = 70
+logger = logging.getLogger("cue.ai.report")
+
 GATE_REASON = "content_relevance_low"
+
+# 실제 내용 채점을 붙이는 자리. None이면 아래 해시 더미가 쓰인다.
+#
+#   def scorer(question_text: str, answer_text: str) -> int:   # 0~100
+#
+# 전사 텍스트가 있을 때만 불린다. D 담당이며 프롬프트 초안은
+# docs/내용채점_프롬프트_초안.md에 있다. 여기에 함수를 꽂으면 그때부터
+# 게이트가 진짜 답변을 보고 걸린다.
+CONTENT_SCORER = None
 
 # 최근 3회차 변화가 이 값 미만이면 정체로 본다.
 STALLED_THRESHOLD = 3
@@ -258,7 +270,35 @@ def _axis_result(
     )
 
 
-def build_report(session_id: str, req: ReportCreateRequest) -> ReportResult:
+def _content_score(
+    session_id: str, row, transcripts: Optional[dict[str, str]]
+) -> Optional[int]:
+    """실제 채점 결과. 채점기가 없거나 전사가 없으면 None.
+
+    None이면 부르는 쪽이 해시 더미를 쓴다.
+    """
+    if CONTENT_SCORER is None or not transcripts:
+        return None
+
+    text = transcripts.get(row.question_id, "").strip()
+    if not text:
+        return None
+
+    try:
+        score = int(CONTENT_SCORER(row.text, text))
+    except Exception:
+        # 채점이 터져도 리포트 전체를 날리지는 않는다. 더미 점수로 이어간다.
+        logger.warning("내용 채점에 실패해 더미 점수를 씁니다: %s", row.question_id)
+        return None
+
+    return max(0, min(100, score))
+
+
+def build_report(
+    session_id: str,
+    req: ReportCreateRequest,
+    transcripts: Optional[dict[str, str]] = None,
+) -> ReportResult:
     rows = scored_answers(req.answers)
     extra = reasks_by_target(req.answers)
     statuses = axis_statuses(req.answers)
@@ -274,7 +314,11 @@ def build_report(session_id: str, req: ReportCreateRequest) -> ReportResult:
     per_question: dict[str, dict[str, int]] = {}
     for r in rows:
         scores = {a: score_for(session_id, r.question_id, a) for a in AXES}
-        if offtopic:
+        real = _content_score(session_id, r, transcripts)
+        if real is not None:
+            # 실제 채점이 붙어 있으면 더미 트리거보다 우선한다
+            scores["content"] = real
+        elif offtopic:
             scores["content"] = offtopic_score_for(session_id, r.question_id)
         elif partial_offtopic:
             scores["content"] = partial_offtopic_score_for(session_id, r.question_id)
@@ -373,7 +417,11 @@ def _improved(rows: list[ReportAnswer]) -> list[ImprovedAnswer]:
     return out
 
 
-def build_retry(session_id: str, req: ReportRetryRequest) -> ReportRetryResult:
+def build_retry(
+    session_id: str,
+    req: ReportRetryRequest,
+    transcripts: Optional[dict[str, str]] = None,
+) -> ReportRetryResult:
     """요청한 축만 다시 계산해 돌려준다. 백엔드가 기존 리포트에 병합한다."""
     rows = scored_answers(req.answers)
     statuses = axis_statuses(req.answers)
