@@ -8,7 +8,14 @@ import os
 
 from fastapi import FastAPI
 
-from ai.errors import register_error_handlers
+from ai import env
+
+# docker compose는 .env를 알아서 읽지만 로컬에서 uvicorn을 직접 띄우면 읽지 않는다.
+# AI_MODE나 키를 .env에 넣어 두고도 반영되지 않는 일을 막는다.
+# 이미 설정된 환경변수는 덮어쓰지 않으므로 배포 동작은 그대로다.
+env.load()
+
+from ai.errors import register_error_handlers  # noqa: E402
 from ai.report_router import router as report_router
 from ai.router import DEFAULT_SECRET, SECRET_ENV, router
 

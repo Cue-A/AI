@@ -22,6 +22,12 @@ env/
 Thumbs.db
 desktop.ini
 
+# 이력서 · 면접 영상은 개인정보다. 실수로도 올라가면 안 된다
+*.pdf
+*.docx
+*.hwp
+private/
+
 # 실제 모델을 붙일 때 생기는 것들
 *.mp3
 *.wav
