@@ -15,15 +15,19 @@ process_answer() 하나만 호출하면 된다.
 
 import os
 import json
-from faster_whisper import WhisperModel
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:  # 타입 힌트용. 실행 시에는 불러오지 않는다
+    from faster_whisper import WhisperModel
 
 # ---------------------------------------------------------------------------
 # 설정값 (Q1/Q2 대조 실험으로 확정한 값들)
 # ---------------------------------------------------------------------------
 
-MODEL_NAME = "large-v3"
-DEVICE = "cuda"
-COMPUTE_TYPE = "float16"
+MODEL_NAME = os.environ.get("STT_MODEL", "large-v3")
+# GPU가 없는 곳에서도 불러올 수 있어야 한다. 개발자 노트북에서는 STT_DEVICE=cpu.
+DEVICE = os.environ.get("STT_DEVICE", "cuda")
+COMPUTE_TYPE = os.environ.get("STT_COMPUTE_TYPE", "float16")
 
 SILENCE_THRESHOLD = 1.0  # 초. 이보다 길게 비면 "의미 있는 침묵"으로 판단.
 ENDING_PATTERNS = ["습니다", "니다", "겠습니다", "합니다", "됩니다", "죠", "네요", "어요", "아요"]
@@ -31,7 +35,6 @@ ENDING_PATTERNS = ["습니다", "니다", "겠습니다", "합니다", "됩니�
 # 나중에 C의 Redis 인프라가 준비되면 이 경로 대신 Redis 클라이언트로 교체.
 # 배포 환경마다 다를 수 있어서 환경변수로 오버라이드 가능하게 해둠.
 CACHE_DIR = os.environ.get("STT_CACHE_DIR", "./stt_cache")
-os.makedirs(CACHE_DIR, exist_ok=True)
 
 
 # ---------------------------------------------------------------------------
@@ -41,9 +44,16 @@ os.makedirs(CACHE_DIR, exist_ok=True)
 _model = None
 
 
-def _get_model() -> WhisperModel:
+def _get_model() -> "WhisperModel":
+    """모델은 처음 쓸 때 한 번만 올린다.
+
+    faster-whisper를 여기서 불러온다. 모듈 맨 위에서 불러오면 STT를 쓰지 않는
+    더미 배포에서도 패키지를 요구하게 되어 이미지가 무거워지고 import가 깨진다.
+    """
     global _model
     if _model is None:
+        from faster_whisper import WhisperModel
+
         _model = WhisperModel(MODEL_NAME, device=DEVICE, compute_type=COMPUTE_TYPE)
     return _model
 
@@ -126,6 +136,7 @@ def compute_ending_metrics(full_text: str, segments, audio_duration: float) -> d
 # ---------------------------------------------------------------------------
 
 def _cache_path(session_id: str, question_id: str) -> str:
+    os.makedirs(CACHE_DIR, exist_ok=True)
     return os.path.join(CACHE_DIR, f"{session_id}__{question_id}.json")
 
 

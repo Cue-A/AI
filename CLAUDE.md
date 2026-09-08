@@ -222,7 +222,9 @@ topic_total       max(계획된 주제 수, 지금까지 열린 주제 수)
 리포트 answers[]  is_replay · is_spare_topic 추가. AI가 세션을 보관하지 않아
                   요청으로 받지 않으면 알 수 없다. 기본값 false
 부분 실패 트리거   video_url · audio_url에 fail이 들어 있으면 해당 축이 failed
-게이트 트리거      audio_url에 offtopic이 있으면 내용 점수 10~29 → gated: true
+게이트 트리거      audio_url에 offtopic이 있으면 내용 점수 10~29 → 상한 40
+                  audio_url에 partial이 있으면 내용 점수 30~49 → 상한 70
+                  둘 다 있으면 더 심한 쪽(offtopic)으로 본다
 전체 실패 트리거   audio_url에 content_fail이 있으면 태스크가 status: error
 더미 점수         session_id + question_id 해시로 50~90. 같은 요청은 같은 점수
 DUMMY_POLL_TICKS  0이면 즉시 done. 올리면 그 횟수만큼 processing을 거친다

@@ -48,34 +48,28 @@ FAIL_MARKER = "fail"
 CONTENT_FAIL_MARKER = "content_fail"
 
 # 주제에서 벗어난 답변. 내용 관련성을 임계 아래로 떨어뜨려 적절성 게이트를 발동시킨다.
-OFFTOPIC_MARKER = "offtopic"
+# 완전 이탈과 부분 이탈을 따로 둔다. 게이트가 두 단계라서 한쪽만으로는
+# 백엔드가 나머지 한 단계를 한 번도 못 보기 때문이다.
+OFFTOPIC_MARKER = "offtopic"          # 완전 이탈 → 내용 10~29 → 상한 40
+PARTIAL_OFFTOPIC_MARKER = "partial"   # 부분 이탈 → 내용 30~49 → 상한 70
 
 # 적절성 게이트 — 내용 관련성이 임계값 미만이면 총점에 상한을 씌운다. (계약서 5장)
+#
+# 사람이 매기는 5단계 라벨과 이 점수를 같은 자로 맞춘 것이다.
+# 채점 프롬프트(Rubric)에도 같은 구간을 넣어야 라벨과 점수가 어긋나지 않는다.
+#
+#   5점 우수      85~100
+#   4점 양호      70~84
+#   3점 중간      50~69   게이트 없음
+#   2점 미흡      30~49   총점 상한 70
+#   1점 주제이탈   0~29    총점 상한 40
+#
 # 값은 잠정이며 앵커 답변 세트로 튜닝한다. 바뀌어도 응답 구조는 그대로다.
 GATE_SEVERE_THRESHOLD = 30
 GATE_PARTIAL_THRESHOLD = 50
 GATE_SEVERE_CAP = 40
 GATE_PARTIAL_CAP = 70
 GATE_REASON = "content_relevance_low"
-# ---------------------------------------------------------------------------
-# 유틸
-# ---------------------------------------------------------------------------
-
-
-def score_for(*parts: str) -> int:
-    """같은 입력이면 항상 같은 점수가 나온다. 50~90 범위.
-
-    백엔드가 같은 리포트를 여러 번 요청해도 값이 흔들리지 않아야
-    QA 테스트가 편하다. 실제 서버에서는 LLM과 CV 분석 결과로 대체된다.
-    """
-    digest = hashlib.sha256("|".join(parts).encode("utf-8")).digest()
-    return 50 + digest[0] % 41
-
-
-def offtopic_score_for(*parts: str) -> int:
-    """주제 이탈 답변의 내용 점수. 10~29로 게이트 임계(30) 아래로 둔다."""
-    digest = hashlib.sha256("|".join(parts).encode("utf-8")).digest()
-    return 10 + digest[0] % 20
 
 # 최근 3회차 변화가 이 값 미만이면 정체로 본다.
 STALLED_THRESHOLD = 3
@@ -97,9 +91,19 @@ def score_for(*parts: str) -> int:
 
 
 def offtopic_score_for(*parts: str) -> int:
-    """주제 이탈 답변의 내용 점수. 10~29로 게이트 임계(30) 아래에 둔다."""
+    """완전 이탈 답변의 내용 점수. 10~29로 심각 임계(30) 아래에 둔다."""
     digest = hashlib.sha256("|".join(parts).encode("utf-8")).digest()
     return 10 + digest[0] % 20
+
+
+def partial_offtopic_score_for(*parts: str) -> int:
+    """부분 이탈 답변의 내용 점수. 30~49로 두 임계 사이에 둔다.
+
+    질문의 핵심을 살짝 비껴간 답변이다. 완전 이탈은 아니므로 상한 40이 아니라
+    상한 70이 걸린다. 이 트리거가 없으면 백엔드가 70 상한을 한 번도 못 본다.
+    """
+    digest = hashlib.sha256("|".join(parts).encode("utf-8")).digest()
+    return 30 + digest[0] % 20
 
 
 def apply_gate(overall_score: int, content_score: Optional[int]) -> tuple[int, bool, Optional[str]]:
@@ -168,6 +172,10 @@ def content_failed(answers: list[ReportAnswer]) -> bool:
 
 def is_offtopic(answers: list[ReportAnswer]) -> bool:
     return _has([a.audio_url for a in answers], OFFTOPIC_MARKER)
+
+
+def is_partial_offtopic(answers: list[ReportAnswer]) -> bool:
+    return _has([a.audio_url for a in answers], PARTIAL_OFFTOPIC_MARKER)
 
 
 def axis_statuses(answers: list[ReportAnswer]) -> dict[str, tuple[str, Optional[str]]]:
@@ -260,12 +268,16 @@ def build_report(session_id: str, req: ReportCreateRequest) -> ReportResult:
 
     # 문항별 축 점수 — 결정론적으로 만든다.
     # 주제 이탈 답변이면 내용 점수만 게이트 임계 아래로 떨어뜨린다.
+    # 완전 이탈이 부분 이탈보다 우선한다. 둘 다 들어 있으면 더 심한 쪽으로 본다.
     offtopic = is_offtopic(req.answers)
+    partial_offtopic = not offtopic and is_partial_offtopic(req.answers)
     per_question: dict[str, dict[str, int]] = {}
     for r in rows:
         scores = {a: score_for(session_id, r.question_id, a) for a in AXES}
         if offtopic:
             scores["content"] = offtopic_score_for(session_id, r.question_id)
+        elif partial_offtopic:
+            scores["content"] = partial_offtopic_score_for(session_id, r.question_id)
         per_question[r.question_id] = scores
 
     questions: list[QuestionScore] = []
