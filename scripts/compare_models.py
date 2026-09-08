@@ -17,7 +17,9 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.stdout.reconfigure(encoding="utf-8")
 
-from ai import llm, resume  # noqa: E402
+from ai import env, llm, resume  # noqa: E402
+
+env.load()  # .env의 ANTHROPIC_API_KEY를 읽어 온다
 from ai.session_plan import build_plan  # noqa: E402
 
 DEFAULT_MODELS = ["claude-sonnet-5", "claude-opus-5"]
@@ -32,13 +34,14 @@ def slots_for(question_count: int, persona: str, seed: int):
     return plan, slots
 
 
-def run_one(model: str, resume_file, job_role, persona, slots, effort):
+def run_one(model: str, resume_file, job_role, persona, slots, effort, company_profile=None):
     os.environ["LLM_MODEL"] = model
     os.environ["LLM_EFFORT"] = effort
 
     started = time.monotonic()
     questions = llm.generate_main_questions(
-        resume=resume_file, job_role=job_role, persona=persona, slots=slots
+        resume=resume_file, job_role=job_role, persona=persona, slots=slots,
+        company_profile=company_profile,
     )
     return questions, time.monotonic() - started
 
@@ -52,6 +55,8 @@ def main() -> int:
     p.add_argument("--seed", type=int, default=1, help="같은 구성으로 비교하려고 고정한다")
     p.add_argument("--effort", default="medium")
     p.add_argument("--models", nargs="+", default=DEFAULT_MODELS)
+    p.add_argument("--company", default=None,
+                   help="기업 id. 인재상이 질문에 반영되는지 함께 본다")
     args = p.parse_args()
 
     if not os.environ.get("ANTHROPIC_API_KEY"):
@@ -76,12 +81,25 @@ def main() -> int:
     import logging
     logging.basicConfig(level=logging.INFO, format="  %(message)s")
 
+    company_profile = None
+    if args.company:
+        from ai import companies
+
+        company_profile = companies.profile_for(args.company, args.job)
+        if company_profile is None:
+            print("  " + args.company + "는 인재상을 쓸 수 없는 기업입니다 "
+                  "(verified가 아니거나 핵심가치가 없습니다). 직무만으로 만듭니다." + "\n")
+        else:
+            bar = "-" * 70
+            print("\n" + bar + "\n질문에 반영할 인재상\n" + bar + "\n" + company_profile)
+
     results = {}
     for model in args.models:
         print(f"\n{'=' * 70}\n{model}\n{'=' * 70}")
         try:
             questions, elapsed = run_one(
-                model, resume_file, args.job, args.persona, slots, args.effort
+                model, resume_file, args.job, args.persona, slots, args.effort,
+                company_profile=company_profile,
             )
         except llm.LlmError as e:
             print(f"  실패: {e}")

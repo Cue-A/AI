@@ -7,7 +7,8 @@ from unittest.mock import patch as mock_patch
 
 import pytest
 
-from ai import companies, dummy, llm, pipeline, resume
+from ai import answers, companies, dummy, llm, pipeline, resume
+from ai.answers import AnswerText, SttError
 from ai.llm import LlmError
 from ai.pipeline import main_question_slots
 from ai.resume import Resume, ResumeError
@@ -27,7 +28,10 @@ def llm_mode(monkeypatch):
 
 @pytest.fixture
 def fake_llm():
-    """이력서 다운로드와 질문 생성을 가로챈다."""
+    """이력서 다운로드 · 질문 생성 · 전사를 가로챈다.
+
+    실제 API도 GPU도 부르지 않는다.
+    """
     generated = {}
 
     def generate(*, slots, **kw):
@@ -36,9 +40,22 @@ def fake_llm():
         generated.update(out)
         return out
 
+    def transcribe(*, audio_url, session_id, question_id, is_timeout=False):
+        """전사는 더미와 같은 규칙을 쓴다 — audio_url에 short이 있으면 부실한 답변."""
+        short = "short" in audio_url or "insufficient" in audio_url
+        return AnswerText(
+            duration_sec=5 if short else 45,
+            word_count=10 if short else 60,
+            text="네." if short else "결제 모듈을 맡았고 재시도 로직을 직접 설계했습니다.",
+        )
+
     with mock_patch.object(resume, "fetch", return_value=Resume(text="이력서")) as fetch, \
-         mock_patch.object(llm, "generate_main_questions", side_effect=generate) as gen:
-        yield SimpleHolder(fetch=fetch, generate=gen, generated=generated)
+         mock_patch.object(llm, "generate_main_questions", side_effect=generate) as gen, \
+         mock_patch.object(answers, "transcribe", side_effect=transcribe) as stt, \
+         mock_patch.object(llm, "generate_followup",
+                           return_value="[꼬리질문] 그 판단의 근거는 무엇이었나요?") as fup:
+        yield SimpleHolder(fetch=fetch, generate=gen, generated=generated,
+                           transcribe=stt, followup=fup)
 
 
 class SimpleHolder:
@@ -302,3 +319,132 @@ def test_생성_중에_답변을_보내면_INVALID_QUESTION_ID(client, auth, llm
 
         release.set()
         poll_until_done(client, auth, res.json()["task_id"])
+
+
+# ---------------------------------------------------------------------------
+# 답변 처리 — STT를 타는 경로
+#
+# 더미 모드는 audio_url 문자열로 길이를 지어내고 즉시 끝난다.
+# llm 모드는 전사를 거쳐 실제 발화 길이로 진행하고, 꼬리질문을 새로 만든다.
+# ---------------------------------------------------------------------------
+
+
+def _first_question(client, auth, body=None):
+    res = client.post("/ai/sessions", headers=auth, json=body or BODY)
+    sid = res.json()["session_id"]
+    done, _ = poll_until_done(client, auth, res.json()["task_id"])
+    return sid, done["result"]
+
+
+def _answer(client, auth, sid, item, audio="https://s3.../ans.webm"):
+    res = client.post(f"/ai/sessions/{sid}/answers", headers=auth, json={
+        "question_id": item["question_id"],
+        "audio_url": audio,
+        "video_url": None,
+        "is_timeout": False,
+    })
+    assert res.status_code == 202, res.json()
+    done, seen = poll_until_done(client, auth, res.json()["task_id"])
+    return done, seen
+
+
+def test_답변_처리가_전사를_거친다(client, auth, llm_mode, fake_llm):
+    """길이 게이트에 실제 발화 길이가 들어가야 한다."""
+    sid, first = _first_question(client, auth)
+    _answer(client, auth, sid, first)
+
+    assert fake_llm.transcribe.call_count == 1
+    kw = fake_llm.transcribe.call_args.kwargs
+    assert kw["session_id"] == sid
+    assert kw["question_id"] == first["question_id"]
+
+
+def test_답변_처리도_processing을_거친다(client, auth, llm_mode, fake_llm):
+    """실제 서버는 전사에 시간이 걸린다. 백엔드 폴링 루프가 돌아야 한다."""
+    sid, first = _first_question(client, auth)
+    _, seen = _answer(client, auth, sid, first)
+    assert seen[-1] == "done"
+
+
+def test_꼬리질문은_전사된_답변을_근거로_만든다(client, auth, llm_mode, fake_llm):
+    """직전 답변 텍스트가 넘어가지 않으면 답변을 안 들은 질문이 나간다."""
+    sid, item = _first_question(client, auth)
+
+    for _ in range(10):
+        done, _ = _answer(client, auth, sid, item)
+        item = done["result"]
+        if item["type"] == "session_end":
+            break
+        if item["type"] == "followup":
+            break
+
+    assert item["type"] == "followup", item
+    assert item["text"] == "[꼬리질문] 그 판단의 근거는 무엇이었나요?"
+
+    history = fake_llm.followup.call_args.kwargs["history"]
+    assert history, "직전 답변이 넘어가지 않았습니다"
+    assert history[-1].answer.startswith("결제 모듈")
+    assert history[-1].question.startswith("[생성됨]")
+
+
+def test_주제가_바뀌면_이전_대화를_끌고_가지_않는다(client, auth, llm_mode, fake_llm):
+    """꼬리질문은 지금 주제의 답변만 봐야 한다."""
+    session = dummy.create_session(question_count=9, persona="pressure", job_role="AI")
+    session.start()
+    session.advance(45, 60, is_timeout=False, answer_text="첫 주제 답변입니다.")
+    assert len(session.topic_history) >= 1
+
+    # 새 주질문이 나올 때까지 진행시킨다
+    for _ in range(12):
+        item = session.advance(45, 60, is_timeout=False, answer_text="답변입니다.")
+        if getattr(item, "type", None) == "question":
+            break
+
+    questions = [e["question"] for e in session.topic_history]
+    assert len(questions) == 1, questions
+    assert not session.answered_history()
+
+
+def test_전사가_실패하면_STT_FAILED가_나간다(client, auth, llm_mode, fake_llm):
+    """폴링이 processing에 갇히면 백엔드가 세션을 정리할 수 없다."""
+    sid, first = _first_question(client, auth)
+    fake_llm.transcribe.side_effect = SttError("음성을 내려받지 못했습니다")
+
+    res = client.post(f"/ai/sessions/{sid}/answers", headers=auth, json={
+        "question_id": first["question_id"],
+        "audio_url": "https://s3.../ans.webm",
+        "video_url": None,
+        "is_timeout": False,
+    })
+    done, _ = poll_until_done(client, auth, res.json()["task_id"])
+
+    assert done["status"] == "error"
+    assert done["error_code"] == "STT_FAILED"
+    assert "result" not in done
+
+
+def test_꼬리질문_생성이_실패해도_세션은_이어진다(client, auth, llm_mode, fake_llm):
+    """고정 문장이 나가는 편이 면접이 끊기는 것보다 낫다."""
+    fake_llm.followup.side_effect = LlmError("생성 실패")
+    sid, item = _first_question(client, auth)
+
+    for _ in range(10):
+        done, _ = _answer(client, auth, sid, item)
+        item = done["result"]
+        if item["type"] in ("followup", "session_end"):
+            break
+
+    assert item["type"] == "followup", item
+    assert item["text"]                      # 고정 문장이라도 나간다
+    assert not item["text"].startswith("[꼬리질문]")
+
+
+def test_더미_모드는_전사를_부르지_않는다(client, auth, fake_llm):
+    """백엔드가 지금 검증하고 있는 동작이 바뀌면 안 된다."""
+    res = client.post("/ai/sessions", headers=auth, json=BODY)
+    sid = res.json()["session_id"]
+    done, _ = poll_until_done(client, auth, res.json()["task_id"])
+    _answer(client, auth, sid, done["result"])
+
+    assert fake_llm.transcribe.call_count == 0
+    assert fake_llm.followup.call_count == 0

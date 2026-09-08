@@ -37,14 +37,18 @@ docs/                 계약서와 설계 문서. 이것이 스펙입니다
   계약서_변경사항.md                    백엔드 전달용. 1주차에 바뀐 것
   백엔드_요청사항.md                    백엔드 전달용. P0 / P1 / 배포
   기업목록_프론트전달용.md              프론트 전달용. 기업 선택 UI
+  시선모델_선정.md                      gaze 축 모델 비교와 결정 (L2CS-Net)
+  내용채점_프롬프트_초안.md              D 전달용. STT 붙으면 쓸 채점 Rubric
 ai/
   session_plan.py     세션 구성 로직. 검증된 파일 — 아래 예외 외에는 수정 금지
   schemas.py          계약서의 요청 · 응답 Pydantic 모델
   dummy.py            고정 질문 텍스트, 세션 진행, 메모리 보관소
   llm.py              Claude로 주질문 · 꼬리질문 생성. 모델 · effort · 프롬프트
   resume.py           이력서 다운로드 (PDF · Word · 텍스트)
+  answers.py          답변 오디오 → 전사 · 발화 지표 (STT 이음매)
+  stt.py              Whisper 전사와 발화 · 마무리 지표 (B 담당)
   tasks.py            진짜 백그라운드 실행 (스레드풀)
-  pipeline.py         세션 시작 흐름 — 더미/llm 분기, 인재상 반영
+  pipeline.py         세션 시작 · 답변 처리 흐름 — 더미/llm 분기
   router.py           /ai/* 엔드포인트, 시크릿 헤더 검증
   errors.py           에러 응답 형식
   companies.py        회사 목록 (verified 필터)
@@ -62,7 +66,7 @@ tests/
   test_polling.py     processing 흉내 — 단계 진행 · progress
   test_llm.py         이력서 로딩 · 주질문 · 꼬리질문 생성 요청 · 실패 처리
   test_tasks.py       백그라운드 실행
-  test_pipeline.py    세션 시작 흐름
+  test_pipeline.py    세션 시작 · 답변 처리 흐름
   test_companies.py   인재상 데이터 — 파싱 잔재 · 스키마
 scripts/
   compare_models.py   같은 이력서로 모델을 바꿔 돌려 품질 비교
@@ -72,29 +76,36 @@ README.md             백엔드 담당자용 curl 가이드
 
 **질문 생성 · 리포트 생성 두 계약 모두 완성되어 동작합니다.**
 `AI_MODE=llm`이면 주질문이 이력서를 읽고 실제로 생성됩니다.
-꼬리질문 · 되묻기 · verdict 판정은 답변 텍스트가 필요하므로 STT가 붙어야 가능합니다.
+꼬리질문도 연결되어 있습니다. 다만 실제로 돌리려면 GPU가 필요합니다.
 
-### 꼬리질문 — 만들어 뒀지만 아직 연결되지 않았습니다
-
-`llm.generate_followup()`은 완성되어 있고 프롬프트도 실제 이력서 기반 대화로
-두 번 튜닝했습니다. 다만 흐름에 붙이지 않았습니다.
-
-계약서의 답변 제출 요청에는 `audio_url`만 있고 답변 텍스트가 없습니다.
-꼬리질문은 직전 답변을 읽고 만드는 것이라 텍스트 없이는 부를 수 없습니다.
-없는 입력을 흉내내서 붙이면 그 순간부터 가짜 질문이 나갑니다.
-
-**STT를 붙이는 사람이 할 일은 두 가지입니다.**
+### 답변 처리 흐름
 
 ```
-1. ai/dummy.py의 answer_length()를 STT 결과 기반으로 교체
-2. 주제별로 (질문 텍스트, 답변 텍스트) 쌍을 쌓아
-   llm.generate_followup(history=..., difficulty=..., persona=..., job_role=...)에 넘김
-   history의 마지막 항목이 파고들 대상입니다
+답변 오디오  →  전사  →  길이 게이트  →  다음 항목
+                          └ 꼬리질문이면 직전 답변을 읽고 새로 만든다
 ```
+
+```
+AI_MODE=dummy   전사하지 않는다. audio_url 문자열로 길이를 지어낸다
+                백엔드가 지금 검증하고 있는 동작이 이것이다
+AI_MODE=llm     ai/answers.py가 오디오를 내려받아 ai/stt.py로 전사한다
+                발화 길이는 실측값이 되고, 꼬리질문은 답변 텍스트를 근거로 만든다
+```
+
+`DummySession.topic_history`가 지금 주제의 질문·답변 쌍을 들고 있습니다.
+주질문이 나오면 비웁니다. 꼬리질문은 직전 답변을 파고드는 것이라
+이전 주제의 대화를 끌고 가면 안 되기 때문입니다.
 
 `generate_followup`에는 이력서를 넣지 않습니다. 넣으면 답변에 없는 내용을
-끌어와 물어서 "내 답변을 안 들었다"는 인상을 줍니다. 이유는 `ai/llm.py`
-꼬리질문 섹션 주석에 적어 뒀습니다.
+끌어와 물어서 "내 답변을 안 들었다"는 인상을 줍니다.
+
+**아직 남은 것**
+
+```
+되묻기 문구      고정 문장이다. 답변을 읽고 다시 묻는 문구는 아직 없다
+verdict 2단계    LLM 판정. 일관성 검증이 끝나야 켠다. 지금은 항상 None
+내용 채점        report_dummy의 점수가 해시다. 초안은 docs/내용채점_프롬프트_초안.md
+```
 
 ## 절대 하지 말 것
 
@@ -221,7 +232,9 @@ topic_total       max(계획된 주제 수, 지금까지 열린 주제 수)
 리포트 answers[]  is_replay · is_spare_topic 추가. AI가 세션을 보관하지 않아
                   요청으로 받지 않으면 알 수 없다. 기본값 false
 부분 실패 트리거   video_url · audio_url에 fail이 들어 있으면 해당 축이 failed
-게이트 트리거      audio_url에 offtopic이 있으면 내용 점수 10~29 → gated: true
+게이트 트리거      audio_url에 offtopic이 있으면 내용 점수 10~29 → 상한 40
+                  audio_url에 partial이 있으면 내용 점수 30~49 → 상한 70
+                  둘 다 있으면 더 심한 쪽(offtopic)으로 본다
 전체 실패 트리거   audio_url에 content_fail이 있으면 태스크가 status: error
 더미 점수         session_id + question_id 해시로 50~90. 같은 요청은 같은 점수
 DUMMY_POLL_TICKS  0이면 즉시 done. 올리면 그 횟수만큼 processing을 거친다

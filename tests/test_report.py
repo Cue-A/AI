@@ -7,7 +7,13 @@ import json
 
 import pytest
 
-from ai.report_dummy import GATE_CAP, GATE_THRESHOLD, apply_gate
+from ai.report_dummy import (
+    GATE_PARTIAL_CAP,
+    GATE_PARTIAL_THRESHOLD,
+    GATE_SEVERE_CAP,
+    GATE_SEVERE_THRESHOLD,
+    apply_gate,
+)
 from ai.report_schemas import (
     AXIS_WEIGHTS,
     CompareResponse,
@@ -34,8 +40,10 @@ def answer(n, *, type="question", category="지원동기", difficulty="L1",
         "fail": f"https://s3.../ans_{n}_fail.webm",
         # 내용 분석 실패 — 전체 실패다. speech의 fail과 구분된다
         "content_fail": f"https://s3.../ans_{n}_content_fail.webm",
-        # 주제 이탈 — 내용 점수가 게이트 임계 아래로 떨어진다
+        # 완전 이탈 — 내용 점수가 10~29로 떨어져 상한 40이 걸린다
         "offtopic": f"https://s3.../ans_{n}_offtopic.webm",
+        # 부분 이탈 — 내용 점수가 30~49로 떨어져 상한 70이 걸린다
+        "partial": f"https://s3.../ans_{n}_partial.webm",
         # 주제 이탈 + 말하기 분석 실패
         "offtopic_fail": f"https://s3.../ans_{n}_offtopic_fail.webm",
         "none": None,
@@ -618,10 +626,22 @@ def test_compare도_시크릿이_필요하다(client, auth):
 # ---------------------------------------------------------------------------
 
 
-def test_게이트_관련성이_낮으면_총점에_상한이_걸린다():
-    """관련성 20 → 총점 상한 40, gated true, gate_reason이 붙는다."""
+def test_게이트_완전_이탈은_총점_상한이_40이다():
+    """관련성 20 → 총점 상한 40, gated true, gate_reason이 붙는다.
+
+    유창한 딴소리를 걸러내기 위한 것이다. 말하기·시선이 아무리 좋아도
+    내용이 질문을 안 다뤘으면 여기서 막힌다.
+    """
     score, gated, reason = apply_gate(68, 20)
-    assert score == GATE_CAP == 40
+    assert score == GATE_SEVERE_CAP == 40
+    assert gated is True
+    assert reason == "content_relevance_low"
+
+
+def test_게이트_부분_이탈은_총점_상한이_70이다():
+    """관련성 40 → 총점 상한 70. 질문의 핵심을 살짝 비껴간 답변이다."""
+    score, gated, reason = apply_gate(85, 40)
+    assert score == GATE_PARTIAL_CAP == 70
     assert gated is True
     assert reason == "content_relevance_low"
 
@@ -635,13 +655,39 @@ def test_게이트_관련성이_충분하면_총점이_그대로다():
 
 
 @pytest.mark.parametrize(
-    "content,expected_gated",
-    [(0, True), (19, True), (29, True), (30, False), (31, False), (72, False), (100, False)],
+    "content,expected_cap",
+    [
+        (0, GATE_SEVERE_CAP),
+        (29, GATE_SEVERE_CAP),
+        (30, GATE_PARTIAL_CAP),
+        (49, GATE_PARTIAL_CAP),
+        (50, None),
+        (72, None),
+        (100, None),
+    ],
 )
-def test_게이트_임계는_30이다(content, expected_gated):
-    """현재 값은 관련성 30 미만일 때 총점 상한 40이다. 잠정값이며 튜닝 대상이다."""
-    _, gated, _ = apply_gate(68, content)
-    assert gated is expected_gated
+def test_게이트_경계는_30과_50이다(content, expected_cap):
+    """사람이 매기는 5단계 라벨과 맞춘 경계다.
+
+        1점 주제이탈   0~29    상한 40
+        2점 미흡      30~49   상한 70
+        3점 중간      50~69   게이트 없음
+
+    잠정값이며 앵커 답변 세트로 튜닝한다.
+    """
+    score, gated, _ = apply_gate(95, content)
+    if expected_cap is None:
+        assert gated is False
+        assert score == 95
+    else:
+        assert gated is True
+        assert score == expected_cap
+
+
+def test_게이트_경계값이_서로_어긋나지_않는다():
+    """임계와 상한을 따로 고치다 순서가 뒤집히면 조용히 이상해진다."""
+    assert GATE_SEVERE_THRESHOLD < GATE_PARTIAL_THRESHOLD
+    assert GATE_SEVERE_CAP < GATE_PARTIAL_CAP
 
 
 def test_게이트는_총점을_올리지_않는다():
@@ -660,14 +706,29 @@ def test_주제_이탈_답변은_HTTP로도_게이트가_발동한다(client, au
 
     assert result["overall"]["gated"] is True
     assert result["overall"]["gate_reason"] == "content_relevance_low"
-    assert result["overall"]["score"] <= GATE_CAP
+    assert result["overall"]["score"] <= GATE_SEVERE_CAP
     # 내용 점수만 임계 아래로 떨어지고 나머지 축은 정상이다
-    assert result["axes"]["content"]["score"] < GATE_THRESHOLD
+    assert result["axes"]["content"]["score"] < GATE_SEVERE_THRESHOLD
     assert result["axes"]["speech"]["score"] >= 50
     assert result["axes"]["gaze"]["score"] >= 50
     # 게이트가 걸려도 리포트 자체는 정상이다
     assert result["report_status"] == "complete"
     assert result["overall"]["partial"] is False
+
+
+def test_부분_이탈_답변은_HTTP로도_70_상한이_걸린다(client, auth):
+    """백엔드가 두 단계를 모두 볼 수 있어야 한다.
+
+    완전 이탈 트리거만 있으면 70 상한 경로가 한 번도 실행되지 않는다.
+    """
+    result, _ = make_report(client, auth, six_answers(audio="partial"))
+
+    assert result["overall"]["gated"] is True
+    assert result["overall"]["gate_reason"] == "content_relevance_low"
+    assert result["overall"]["score"] <= GATE_PARTIAL_CAP
+    content = result["axes"]["content"]["score"]
+    assert GATE_SEVERE_THRESHOLD <= content < GATE_PARTIAL_THRESHOLD
+    assert result["report_status"] == "complete"
 
 
 def test_평범한_답변은_게이트가_걸리지_않는다(client, auth):
@@ -754,7 +815,7 @@ def test_speech_실패는_content로_게이트를_계속_판단한다(client, au
     )
     assert result["overall"]["axes_failed"] == ["speech"]
     assert result["overall"]["gated"] is True
-    assert result["overall"]["score"] <= GATE_CAP
+    assert result["overall"]["score"] <= GATE_SEVERE_CAP
 
 
 def test_시선만_남아도_재정규화된다(client, auth):

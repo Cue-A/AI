@@ -42,6 +42,9 @@ PRICING = {
 #   high     품질이 아쉬울 때 올린다
 DEFAULT_EFFORT = "medium"
 
+# 로그에 원화를 함께 찍는다. 달러만 보면 감이 안 온다.
+KRW = 1450
+
 
 def model() -> str:
     return os.environ.get("LLM_MODEL") or DEFAULT_MODEL
@@ -100,6 +103,10 @@ SYSTEM_PROMPT = """\
 - 한 질문에 한 가지만 묻습니다. 두 가지를 접속사로 붙이지 않습니다.
   「어떤 대회의 어떤 상황이었나요」처럼 묻는 대상이 둘이면 하나로 줄입니다.
   「A를 어떻게 하셨길래 B라고 판단하셨나요」도 둘입니다. 뒤엣것만 남깁니다.
+  예 · 아니오로 답하고 끝날 수 있는 질문은 피합니다.
+  「~해본 적이 있으신가요」로 시작하면 대부분 여기에 걸립니다.
+- 지원동기는 「지금 지원하는 이 직무를 왜 택했는가」를 묻는 자리입니다.
+  이력서에 적힌 과거 프로젝트나 동아리에 왜 지원했는지를 묻는 자리가 아닙니다.
 - 이력서를 읽으면 바로 답이 나오는 것은 묻지 않습니다.
   적힌 사실을 출발점으로 삼되, 이력서에 없는 판단이나 과정을 말하게 합니다.
 - 짧게 씁니다. 한 문장으로, 90자 안팎으로 씁니다.
@@ -220,19 +227,36 @@ def generate_main_questions(
 def _log_usage(response, count: int, kind: str = "주질문") -> None:
     """토큰 사용량을 남긴다. 비용이 예상과 맞는지 여기서 확인한다.
 
+    입력 토큰이 세 갈래로 나뉜다. 하나라도 빼면 비용을 크게 과소평가한다.
+    실제로 이력서 PDF를 넣고 돌렸을 때 input_tokens는 394인데 실제 입력은
+    16,415였다. 나머지가 전부 캐시 쓰기로 잡혀 있었다.
+
+        input_tokens                  캐시를 타지 않은 입력. 정가
+        cache_creation_input_tokens   캐시에 쓴 입력. 정가의 1.25배
+        cache_read_input_tokens       캐시에서 읽은 입력. 정가의 10%
+
     출력 토큰에 thinking이 포함되며, 그것이 비용의 대부분이다.
     """
     u = response.usage
     name = model()
     in_rate, out_rate = PRICING.get(name, (0.0, 0.0))
-    # 캐시 읽기는 입력 요금의 10%다
-    cached = u.cache_read_input_tokens or 0
+    written = getattr(u, "cache_creation_input_tokens", 0) or 0
+    cached = getattr(u, "cache_read_input_tokens", 0) or 0
+    fresh = u.input_tokens or 0
+
     cost = (
-        u.input_tokens * in_rate + cached * in_rate * 0.1 + u.output_tokens * out_rate
+        fresh * in_rate
+        + written * in_rate * 1.25
+        + cached * in_rate * 0.1
+        + (u.output_tokens or 0) * out_rate
     ) / 1_000_000
+
     logger.info(
-        "%s %d개 · %s · effort=%s — input %s (캐시 읽기 %s) / output %s / 약 $%.4f",
-        kind, count, name, effort(), u.input_tokens, cached, u.output_tokens, cost,
+        "%s %d개 · %s · effort=%s — input %s (캐시 쓰기 %s · 읽기 %s) / "
+        "output %s / 약 $%.4f (약 %d원)",
+        kind, count, name, effort(),
+        fresh + written + cached, written, cached, u.output_tokens,
+        cost, round(cost * KRW),
     )
 
 

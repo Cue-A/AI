@@ -197,8 +197,11 @@ class DummySession:
         persona: Persona,
         runner: Union[SessionRunner, RetryRunner],
         planned_topic_count: int,
+        job_role: str = "",
     ):
         self.session_id = session_id
+        # 꼬리질문을 만들 때 필요하다. 계약서 필드를 세션이 들고 있는 것뿐이다.
+        self.job_role = job_role
         self.question_total = question_total
         self.persona = persona
         self.runner = runner
@@ -215,6 +218,21 @@ class DummySession:
         # 카테고리별 주질문 문장. 기본은 고정 문장이고, AI_MODE가 dummy가 아니면
         # 세션 시작 작업이 이력서를 읽고 만든 문장으로 덮어쓴다.
         self.main_questions: dict[str, str] = dict(MAIN_QUESTIONS)
+
+        # 지금 주제에서 오간 질문과 답변. 꼬리질문을 만들 때 근거가 된다.
+        # 주질문이 나올 때마다 비운다. 꼬리질문은 직전 답변을 파고드는 것이라
+        # 이전 주제의 대화를 끌고 가면 안 되기 때문이다.
+        # 더미 모드에서는 답변 텍스트가 없어 계속 빈 채로 남는다.
+        self.topic_history: list[dict[str, str]] = []
+
+    def record_answer_text(self, text: str) -> None:
+        """직전 질문에 대한 답변 텍스트를 붙인다. STT가 있을 때만 값이 온다."""
+        if text and self.topic_history:
+            self.topic_history[-1]["answer"] = text
+
+    def answered_history(self) -> list[dict[str, str]]:
+        """답변까지 채워진 것만. 꼬리질문 생성에 넘긴다."""
+        return [e for e in self.topic_history if e["answer"]]
 
     def attach_main_questions(self, generated: dict[str, str]) -> None:
         """생성된 주질문을 붙인다. 빠진 카테고리는 고정 문장이 남는다."""
@@ -272,6 +290,12 @@ class DummySession:
 
         self.current_question_id = question_id
 
+        text = self._text_for(item)
+        if kind == "question":
+            # 새 주제가 열렸다. 이전 주제의 대화는 여기서 끊는다.
+            self.topic_history = []
+        self.topic_history.append({"question": text, "answer": ""})
+
         # 되묻기는 is_spare_topic과 is_replay가 항상 false다 (계약서 4장)
         if kind == "reask":
             is_spare_topic = False
@@ -284,7 +308,7 @@ class DummySession:
             type=kind,
             question_id=question_id,
             reask_of=reask_of,
-            text=self._text_for(item),
+            text=text,
             audio_url=SAMPLE_AUDIO_URL,
             category=item["category"] if kind == "question" else None,
             difficulty=None if kind == "reask" else item["difficulty"],
@@ -303,9 +327,25 @@ class DummySession:
     def answer(
         self, audio_url: str, is_timeout: bool
     ) -> Union[QuestionResult, SessionEndResult]:
+        """더미 경로. 발화 길이를 audio_url에서 지어낸다."""
         duration_sec, word_count = answer_length(audio_url)
+        return self.advance(duration_sec, word_count, is_timeout=is_timeout)
 
-        # verdict는 LLM 판정 결과다. 더미 단계에서는 항상 None을 넘긴다.
+    def advance(
+        self,
+        duration_sec: int,
+        word_count: int,
+        *,
+        is_timeout: bool,
+        answer_text: str = "",
+    ) -> Union[QuestionResult, SessionEndResult]:
+        """실측 발화 길이로 다음 항목을 낸다. STT가 붙으면 이 경로를 쓴다.
+
+        answer_text가 있으면 대화 기록에 남는다. 꼬리질문 생성이 이것을 읽는다.
+        """
+        self.record_answer_text(answer_text)
+
+        # verdict는 LLM 판정 결과다. 2단계 판정을 켜기 전까지는 항상 None이다.
         # is_timeout이 true면 러너가 되묻기 경로 자체를 타지 않는다 (계약서 3장).
         # 발화 길이는 실제 값 그대로 넘어가고 되묻기 한도도 소모되지 않는다.
         item = self.runner.next(
@@ -400,6 +440,7 @@ def create_session(
     question_count: int,
     persona: Persona,
     replay_log: Optional[list[ReplayLogItem]] = None,
+    job_role: str = "",
 ) -> DummySession:
     """세션을 만든다. 첫 주질문은 뽑지 않는다.
 
@@ -424,6 +465,7 @@ def create_session(
         persona=persona,
         runner=runner,
         planned_topic_count=planned_topic_count,
+        job_role=job_role,
     )
     SESSIONS[session_id] = session
     evict_oldest(SESSIONS, MAX_SESSIONS)

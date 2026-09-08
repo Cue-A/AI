@@ -4,6 +4,11 @@
 """
 import os
 
+# 개발자 각자의 .env를 읽지 않는다. 읽으면 누구 컴퓨터에서는 통과하고
+# 누구 컴퓨터에서는 실패하는 테스트가 된다. 실제 키가 있는 사람의 컴퓨터에서
+# AI_MODE=llm이 새어 들어오면 테스트가 진짜 API를 부를 수도 있다.
+os.environ["CUE_SKIP_DOTENV"] = "1"
+
 import pytest
 
 os.environ.setdefault("CUEANDA_SHARED_SECRET", "test-secret")
