@@ -87,15 +87,11 @@ def main() -> int:
 
         company_profile = companies.profile_for(args.company, args.job)
         if company_profile is None:
-            print(f"  '{args.company}'는 인재상을 쓸 수 없는 기업입니다 "
-                  "(verified가 아니거나 핵심가치가 없습니다). 직무만으로 만듭니다.
-")
+            print("  " + args.company + "는 인재상을 쓸 수 없는 기업입니다 "
+                  "(verified가 아니거나 핵심가치가 없습니다). 직무만으로 만듭니다." + "\n")
         else:
-            print(f"
-{'-' * 70}
-질문에 반영할 인재상
-{'-' * 70}
-{company_profile}")
+            bar = "-" * 70
+            print("\n" + bar + "\n질문에 반영할 인재상\n" + bar + "\n" + company_profile)
 
     results = {}
     for model in args.models:
