@@ -571,3 +571,65 @@ def test_llm_모드면_USE_STT_없이도_전사한다(client, auth, llm_mode, fa
     sid, first = _first_question(client, auth)
     _answer(client, auth, sid, first)
     assert fake_llm.transcribe.called
+
+
+# ---------------------------------------------------------------------------
+# 질문 음성 — USE_TTS
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def fake_tts(monkeypatch):
+    """B가 붙일 ai/tts.py를 흉내낸다."""
+    import sys
+    import types
+
+    calls = []
+    module = types.ModuleType("ai.tts")
+
+    def synthesize(text, persona):
+        calls.append((text, persona))
+        return f"https://s3.../tts/{len(calls)}.mp3"
+
+    module.synthesize = synthesize
+    monkeypatch.setitem(sys.modules, "ai.tts", module)
+    monkeypatch.setenv("USE_TTS", "1")
+    return calls
+
+
+def test_USE_TTS를_켜면_질문에_음성이_붙는다(client, auth, llm_mode, fake_llm, fake_tts):
+    sid, first = _first_question(client, auth)
+
+    assert first["audio_url"] == "https://s3.../tts/1.mp3"
+    assert fake_tts[0][0] == first["text"]
+    assert fake_tts[0][1] == "pressure"      # BODY의 페르소나
+
+    body, _ = _answer(client, auth, sid, first)
+    assert body["result"]["audio_url"].startswith("https://s3.../tts/")
+
+
+def test_음성_합성이_실패하면_텍스트만_나간다(client, auth, llm_mode, fake_llm, monkeypatch):
+    """계약서 8장 — TTS_FAILED는 재시도 없이 audio_url을 null로 둔다."""
+    import sys
+    import types
+
+    module = types.ModuleType("ai.tts")
+
+    def boom(text, persona):
+        raise RuntimeError("API 한도 초과")
+
+    module.synthesize = boom
+    monkeypatch.setitem(sys.modules, "ai.tts", module)
+    monkeypatch.setenv("USE_TTS", "1")
+
+    _, first = _first_question(client, auth)
+
+    assert first["audio_url"] is None
+    assert first["text"], "질문 텍스트는 그대로 나가야 합니다"
+
+
+def test_USE_TTS가_꺼져_있으면_샘플_mp3가_나간다(client, auth, llm_mode, fake_llm, monkeypatch):
+    """모르는 사이에 요금이 나가면 안 된다."""
+    monkeypatch.delenv("USE_TTS", raising=False)
+    _, first = _first_question(client, auth)
+    assert first["audio_url"] == dummy.SAMPLE_AUDIO_URL

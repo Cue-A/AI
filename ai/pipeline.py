@@ -11,7 +11,7 @@ AI_MODE가 dummy면 백그라운드를 타지 않고 고정 문장으로 즉시 
 import logging
 from typing import Optional
 
-from ai import answers, companies, dummy, llm, resume, tasks
+from ai import answers, companies, dummy, llm, resume, tasks, voice
 from ai.answers import SttError
 from ai.dummy import DummySession
 from ai.llm import Exchange, LlmError
@@ -79,9 +79,9 @@ def _prepare(task: BackgroundTask, session: DummySession, req: SessionCreateRequ
 
         session.attach_main_questions(generated)
 
-    # TTS는 3주차에 붙는다. 지금은 단계만 지나간다.
     task.set_stage("tts")
-    return TaskDoneResponse(status="done", result=session.start())
+    first = session.start()
+    return TaskDoneResponse(status="done", result=_voiced_for(session, first))
 
 
 def _company_profile(req: SessionCreateRequest) -> Optional[str]:
@@ -127,6 +127,27 @@ def start_session(req: SessionCreateRequest) -> tuple[DummySession, str]:
 # 더미 모드는 이 흐름을 타지 않는다. audio_url 문자열로 길이를 지어내고
 # 즉시 결과를 낸다. 백엔드가 지금 검증하고 있는 동작이 그것이다.
 # ---------------------------------------------------------------------------
+
+
+def _voiced_for(session: DummySession, result):
+    """질문에 음성을 붙인다. 합성이 꺼져 있으면 샘플 mp3가 그대로 나간다.
+
+    실패해도 예외를 올리지 않는다. 질문 텍스트가 이미 있는데 음성 때문에
+    면접을 끊는 것은 손해가 크다. 계약서 8장이 정한 규칙이다 —
+    TTS_FAILED는 재시도 없이 audio_url을 null로 두고 텍스트로 진행한다.
+    """
+    text = getattr(result, "text", None)
+    if not text:
+        # 세션 종료 항목에는 질문 텍스트가 없다
+        return result
+
+    url = voice.synthesize(text, session.persona)
+    if url:
+        return result.model_copy(update={"audio_url": url})
+    if voice.tts_enabled():
+        # 합성을 켰는데 실패했다. 프론트는 audio_url이 null이면 텍스트만 띄운다.
+        return result.model_copy(update={"audio_url": None})
+    return result
 
 
 def _history(session: DummySession) -> list[Exchange]:
@@ -212,7 +233,7 @@ def _handle_answer(task: BackgroundTask, session: DummySession, req: AnswerSubmi
             result = result.model_copy(update={"text": text})
 
     task.set_stage("tts")
-    return TaskDoneResponse(status="done", result=result)
+    return TaskDoneResponse(status="done", result=_voiced_for(session, result))
 
 
 def submit_answer(session: DummySession, req: AnswerSubmitRequest) -> str:
