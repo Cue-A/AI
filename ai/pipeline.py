@@ -11,19 +11,23 @@ AI_MODE가 dummy면 백그라운드를 타지 않고 고정 문장으로 즉시 
 import logging
 from typing import Optional
 
-from ai import companies, dummy, llm, resume, tasks
+from ai import answers, companies, dummy, llm, resume, tasks
+from ai.answers import SttError
 from ai.dummy import DummySession
-from ai.llm import LlmError
+from ai.llm import Exchange, LlmError
 from ai.resume import ResumeError
-from ai.schemas import SessionCreateRequest, TaskDoneResponse
+from ai.schemas import AnswerSubmitRequest, SessionCreateRequest, TaskDoneResponse
 from ai.session_plan import RetryRunner
 from ai.tasks import BackgroundTask, TaskFailed
 
 logger = logging.getLogger("cue.ai.pipeline")
 
 # 세션 시작에는 STT가 없다. 답변이 아직 없기 때문이다.
-# tts는 3주차에 음성 합성이 붙으면 실제 단계가 된다.
+# tts는 음성 합성이 붙으면 실제 단계가 된다.
 SESSION_START_STAGES = ("generating", "tts")
+
+# 답변 처리는 전사부터 시작한다. (계약서 4장)
+ANSWER_STAGES = ("stt", "generating", "tts")
 
 # 예비 토픽의 주질문 난이도. session_plan.levels_for_topic이 예비 토픽에는
 # 페르소나와 무관하게 L2를 주므로 그 값을 그대로 쓴다.
@@ -100,6 +104,7 @@ def start_session(req: SessionCreateRequest) -> tuple[DummySession, str]:
         question_count=req.question_count,
         persona=req.persona,
         replay_log=req.replay_log,
+        job_role=req.job_role,
     )
 
     if not llm.llm_enabled():
@@ -111,3 +116,82 @@ def start_session(req: SessionCreateRequest) -> tuple[DummySession, str]:
     )
     logger.info("세션 %s 시작 — 주질문 생성을 백그라운드로 돌립니다", session.session_id)
     return session, dummy.register_task(task)
+
+
+# ---------------------------------------------------------------------------
+# 답변 처리
+#
+#   답변 오디오  →  전사  →  길이 게이트  →  다음 항목
+#                            └ 꼬리질문이면 직전 답변을 읽고 새로 만든다
+#
+# 더미 모드는 이 흐름을 타지 않는다. audio_url 문자열로 길이를 지어내고
+# 즉시 결과를 낸다. 백엔드가 지금 검증하고 있는 동작이 그것이다.
+# ---------------------------------------------------------------------------
+
+
+def _followup_text(session: DummySession, difficulty: str, job_role: str) -> Optional[str]:
+    # job_role은 세션이 들고 있다. 계약서 요청 필드를 그대로 보관한 것이다.
+    """직전 답변을 파고드는 꼬리질문. 만들지 못하면 None을 준다.
+
+    실패해도 세션을 멈추지 않는다. 고정 문장이 나가는 편이
+    면접이 중간에 끊기는 것보다 낫다.
+    """
+    history = [
+        Exchange(question=e["question"], answer=e["answer"])
+        for e in session.answered_history()
+    ]
+    if not history:
+        # STT가 텍스트를 주지 못했다. 근거 없이 꼬리질문을 만들 수는 없다.
+        return None
+
+    try:
+        return llm.generate_followup(
+            history=history,
+            difficulty=difficulty,
+            persona=session.persona,
+            job_role=job_role,
+        )
+    except LlmError as e:
+        logger.warning("꼬리질문 생성 실패 — 고정 문장으로 대신합니다: %s", e)
+        return None
+
+
+def _handle_answer(task: BackgroundTask, session: DummySession, req: AnswerSubmitRequest):
+    """백그라운드 본체 — 전사하고 다음 항목을 낸다."""
+    task.set_stage("stt")
+    try:
+        heard = answers.transcribe(
+            audio_url=req.audio_url,
+            session_id=session.session_id,
+            question_id=req.question_id,
+            is_timeout=req.is_timeout,
+        )
+    except SttError as e:
+        raise TaskFailed("STT_FAILED", str(e)) from e
+
+    task.set_stage("generating")
+    result = session.advance(
+        heard.duration_sec,
+        heard.word_count,
+        is_timeout=req.is_timeout,
+        answer_text=heard.text,
+    )
+
+    # 꼬리질문만 새로 만든다. 주질문은 세션 시작 때 이미 만들어 뒀고,
+    # 되묻기는 같은 질문을 다시 묻는 것이라 문구가 바뀌지 않는다.
+    if getattr(result, "type", None) == "followup":
+        text = _followup_text(session, result.difficulty, session.job_role)
+        if text:
+            result = result.model_copy(update={"text": text})
+
+    task.set_stage("tts")
+    return TaskDoneResponse(status="done", result=result)
+
+
+def submit_answer(session: DummySession, req: AnswerSubmitRequest) -> str:
+    """답변을 받아 다음 항목 작업을 띄운다. task_id를 준다."""
+    if not llm.llm_enabled():
+        return dummy.save_task(session.answer(req.audio_url, is_timeout=req.is_timeout))
+
+    task = tasks.run(lambda t: _handle_answer(t, session, req), stages=ANSWER_STAGES)
+    return dummy.register_task(task)

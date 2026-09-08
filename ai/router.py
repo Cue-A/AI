@@ -109,8 +109,7 @@ def submit_answer(session_id: str, req: AnswerSubmitRequest) -> AnswerSubmitResp
             f"현재 질문은 {session.current_question_id}입니다",
         )
 
-    result = session.answer(req.audio_url, is_timeout=req.is_timeout)
-    return AnswerSubmitResponse(task_id=dummy.save_task(result))
+    return AnswerSubmitResponse(task_id=pipeline.submit_answer(session, req))
 
 
 # ---------------------------------------------------------------------------
