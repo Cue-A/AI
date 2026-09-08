@@ -513,3 +513,61 @@ def test_더미_모드는_되묻기도_고정_문장이다(client, auth, fake_ll
     assert item["type"] == "reask"
     assert item["text"] == dummy.REASK_QUESTION
     assert fake_llm.reask.call_count == 0
+
+
+# ---------------------------------------------------------------------------
+# USE_STT — 요금 없이 전사만 확인하는 모드
+#
+# GPU 담당이 통합을 확인할 때 LLM까지 켜면 세션마다 78원이 나간다.
+# Whisper는 우리 GPU에서 돌아 요금이 없으므로 따로 켤 수 있어야 한다.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def stt_only(monkeypatch):
+    monkeypatch.setenv("AI_MODE", "dummy")
+    monkeypatch.setenv("USE_STT", "1")
+
+
+def test_USE_STT만_켜면_전사는_하고_질문은_고정이다(client, auth, stt_only, fake_llm):
+    res = client.post("/ai/sessions", headers=auth, json=BODY)
+    sid = res.json()["session_id"]
+    done, _ = poll_until_done(client, auth, res.json()["task_id"])
+    first = done["result"]
+
+    # 주질문은 LLM을 부르지 않는다 — 요금이 나가면 안 된다
+    assert fake_llm.generate.call_count == 0
+    assert not first["text"].startswith("[생성됨]")
+
+    item = first
+    for _ in range(10):
+        body, _ = _answer(client, auth, sid, item)
+        item = body["result"]
+        if item["type"] in ("followup", "session_end"):
+            break
+
+    # 전사는 돌았다
+    assert fake_llm.transcribe.called
+    # 꼬리질문은 고정 문장이다
+    assert fake_llm.followup.call_count == 0
+    if item["type"] == "followup":
+        assert not item["text"].startswith("[꼬리질문]")
+
+
+def test_USE_STT가_꺼져_있으면_전사하지_않는다(client, auth, fake_llm, monkeypatch):
+    monkeypatch.setenv("AI_MODE", "dummy")
+    monkeypatch.delenv("USE_STT", raising=False)
+
+    res = client.post("/ai/sessions", headers=auth, json=BODY)
+    sid = res.json()["session_id"]
+    done, _ = poll_until_done(client, auth, res.json()["task_id"])
+    _answer(client, auth, sid, done["result"])
+
+    assert fake_llm.transcribe.call_count == 0
+
+
+def test_llm_모드면_USE_STT_없이도_전사한다(client, auth, llm_mode, fake_llm):
+    """기존 동작이 바뀌면 안 된다."""
+    sid, first = _first_question(client, auth)
+    _answer(client, auth, sid, first)
+    assert fake_llm.transcribe.called

@@ -85,7 +85,7 @@ def create_report(session_id: str, req: ReportCreateRequest, task_id: str) -> Op
     더미면 즉시 만든 결과를 주고, llm이면 백그라운드 작업을 등록한다.
     content 실패 처리는 라우터가 이미 걸렀으므로 여기까지 오지 않는다.
     """
-    if not llm.llm_enabled():
+    if not answers_mod.stt_enabled():
         return ReportTaskDone(
             status="done", result=report_dummy.build_report(session_id, req)
         )
@@ -119,7 +119,7 @@ def _build_retry(task: BackgroundTask, session_id: str, req: ReportRetryRequest)
 
 
 def create_retry(session_id: str, req: ReportRetryRequest, task_id: str) -> Optional[object]:
-    if not llm.llm_enabled():
+    if not answers_mod.stt_enabled():
         return ReportRetryTaskDone(
             status="done", result=report_dummy.build_retry(session_id, req)
         )

@@ -200,7 +200,8 @@ def _handle_answer(task: BackgroundTask, session: DummySession, req: AnswerSubmi
     )
 
     # 주질문은 세션 시작 때 이미 만들어 뒀다. 꼬리질문과 되묻기만 여기서 만든다.
-    kind = getattr(result, "type", None)
+    # LLM이 꺼져 있으면(USE_STT만 켠 경우) 고정 문장이 그대로 나간다.
+    kind = getattr(result, "type", None) if llm.llm_enabled() else None
     if kind == "followup":
         text = _followup_text(session, result.difficulty, session.job_role)
         if text:
@@ -216,7 +217,7 @@ def _handle_answer(task: BackgroundTask, session: DummySession, req: AnswerSubmi
 
 def submit_answer(session: DummySession, req: AnswerSubmitRequest) -> str:
     """답변을 받아 다음 항목 작업을 띄운다. task_id를 준다."""
-    if not llm.llm_enabled():
+    if not answers.stt_enabled():
         return dummy.save_task(session.answer(req.audio_url, is_timeout=req.is_timeout))
 
     task = tasks.run(lambda t: _handle_answer(t, session, req), stages=ANSWER_STAGES)
