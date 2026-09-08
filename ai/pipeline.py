@@ -129,6 +129,31 @@ def start_session(req: SessionCreateRequest) -> tuple[DummySession, str]:
 # ---------------------------------------------------------------------------
 
 
+def _history(session: DummySession) -> list[Exchange]:
+    return [
+        Exchange(question=e["question"], answer=e["answer"])
+        for e in session.answered_history()
+    ]
+
+
+def _reask_text(session: DummySession) -> Optional[str]:
+    """무엇을 더 말해야 하는지 짚어 주는 되묻기. 만들지 못하면 None.
+
+    고정 문장 하나로는 지원자가 두 번째에도 같은 대답을 한다.
+    """
+    history = _history(session)
+    if not history:
+        return None
+
+    try:
+        return llm.generate_reask(
+            history=history, persona=session.persona, job_role=session.job_role
+        )
+    except LlmError as e:
+        logger.warning("되묻기 생성 실패 — 고정 문장으로 대신합니다: %s", e)
+        return None
+
+
 def _followup_text(session: DummySession, difficulty: str, job_role: str) -> Optional[str]:
     # job_role은 세션이 들고 있다. 계약서 요청 필드를 그대로 보관한 것이다.
     """직전 답변을 파고드는 꼬리질문. 만들지 못하면 None을 준다.
@@ -136,10 +161,7 @@ def _followup_text(session: DummySession, difficulty: str, job_role: str) -> Opt
     실패해도 세션을 멈추지 않는다. 고정 문장이 나가는 편이
     면접이 중간에 끊기는 것보다 낫다.
     """
-    history = [
-        Exchange(question=e["question"], answer=e["answer"])
-        for e in session.answered_history()
-    ]
+    history = _history(session)
     if not history:
         # STT가 텍스트를 주지 못했다. 근거 없이 꼬리질문을 만들 수는 없다.
         return None
@@ -177,10 +199,14 @@ def _handle_answer(task: BackgroundTask, session: DummySession, req: AnswerSubmi
         answer_text=heard.text,
     )
 
-    # 꼬리질문만 새로 만든다. 주질문은 세션 시작 때 이미 만들어 뒀고,
-    # 되묻기는 같은 질문을 다시 묻는 것이라 문구가 바뀌지 않는다.
-    if getattr(result, "type", None) == "followup":
+    # 주질문은 세션 시작 때 이미 만들어 뒀다. 꼬리질문과 되묻기만 여기서 만든다.
+    kind = getattr(result, "type", None)
+    if kind == "followup":
         text = _followup_text(session, result.difficulty, session.job_role)
+        if text:
+            result = result.model_copy(update={"text": text})
+    elif kind == "reask":
+        text = _reask_text(session)
         if text:
             result = result.model_copy(update={"text": text})
 

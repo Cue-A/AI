@@ -53,9 +53,10 @@ def fake_llm():
          mock_patch.object(llm, "generate_main_questions", side_effect=generate) as gen, \
          mock_patch.object(answers, "transcribe", side_effect=transcribe) as stt, \
          mock_patch.object(llm, "generate_followup",
-                           return_value="[꼬리질문] 그 판단의 근거는 무엇이었나요?") as fup:
+                           return_value="[꼬리질문] 그 판단의 근거는 무엇이었나요?") as fup,          mock_patch.object(llm, "generate_reask",
+                           return_value="[되묻기] 어떤 기준으로 정하셨는지 말씀해 주시겠어요?") as rsk:
         yield SimpleHolder(fetch=fetch, generate=gen, generated=generated,
-                           transcribe=stt, followup=fup)
+                           transcribe=stt, followup=fup, reask=rsk)
 
 
 class SimpleHolder:
@@ -448,3 +449,67 @@ def test_더미_모드는_전사를_부르지_않는다(client, auth, fake_llm):
 
     assert fake_llm.transcribe.call_count == 0
     assert fake_llm.followup.call_count == 0
+
+
+# ---------------------------------------------------------------------------
+# 되묻기 — 답변이 짧으면 같은 질문을 다시 묻는다
+# ---------------------------------------------------------------------------
+
+
+def _until(client, auth, sid, item, kind, audio, limit=12):
+    """원하는 종류가 나올 때까지 답변을 넣는다."""
+    for _ in range(limit):
+        done, _ = _answer(client, auth, sid, item, audio=audio)
+        item = done["result"]
+        if item["type"] in (kind, "session_end"):
+            return item
+    return item
+
+
+def test_되묻기_문구를_답변을_읽고_만든다(client, auth, llm_mode, fake_llm):
+    """고정 문장 하나로는 지원자가 두 번째에도 같은 대답을 한다."""
+    sid, first = _first_question(client, auth)
+    item = _until(client, auth, sid, first, "reask", "https://s3.../ans_short.webm")
+
+    assert item["type"] == "reask", item
+    assert item["text"] == "[되묻기] 어떤 기준으로 정하셨는지 말씀해 주시겠어요?"
+    assert fake_llm.reask.called
+
+    kwargs = fake_llm.reask.call_args.kwargs
+    assert kwargs["persona"] == "pressure"
+    assert kwargs["job_role"] == "백엔드 개발"
+    assert kwargs["history"], "직전 대화가 넘어가지 않았습니다"
+
+
+def test_되묻기는_계약대로_null_필드를_지킨다(client, auth, llm_mode, fake_llm):
+    """문구를 새로 만들어도 category · difficulty는 null이어야 한다."""
+    sid, first = _first_question(client, auth)
+    item = _until(client, auth, sid, first, "reask", "https://s3.../ans_short.webm")
+
+    assert item["type"] == "reask"
+    assert item["category"] is None
+    assert item["difficulty"] is None
+    assert item["reask_of"] == item["question_id"].rstrip("r")
+    assert item["is_spare_topic"] is False
+    assert item["is_replay"] is False
+
+
+def test_되묻기_생성이_실패해도_세션은_이어진다(client, auth, llm_mode, fake_llm):
+    fake_llm.reask.side_effect = LlmError("생성 실패")
+    sid, first = _first_question(client, auth)
+    item = _until(client, auth, sid, first, "reask", "https://s3.../ans_short.webm")
+
+    assert item["type"] == "reask", item
+    assert item["text"]
+    assert not item["text"].startswith("[되묻기]")
+
+
+def test_더미_모드는_되묻기도_고정_문장이다(client, auth, fake_llm):
+    res = client.post("/ai/sessions", headers=auth, json=BODY)
+    sid = res.json()["session_id"]
+    done, _ = poll_until_done(client, auth, res.json()["task_id"])
+    item = _until(client, auth, sid, done["result"], "reask", "https://s3.../ans_short.webm")
+
+    assert item["type"] == "reask"
+    assert item["text"] == dummy.REASK_QUESTION
+    assert fake_llm.reask.call_count == 0
