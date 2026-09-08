@@ -1,4 +1,6 @@
 # 실제 모델을 붙일 때 채운다. 지금은 비어 있다.
 # 예정: openai-whisper / faster-whisper, TTS 클라이언트, LLM 클라이언트
+# 실제 모델. openai-whisper와 faster-whisper 중 비교 후 faster-whisper로 확정.
+# (같은 large-v3 가중치, CTranslate2 기반이라 더 빠르고 한국어 필러워드 검증 결과도 동일)
 
 faster-whisper==1.2.1
