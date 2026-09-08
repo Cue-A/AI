@@ -12,7 +12,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, Header
 
-from ai import dummy, report_dummy
+from ai import dummy, report_dummy, report_pipeline
 from ai.errors import ApiError
 from ai.schemas import TaskErrorResponse
 from ai.report_schemas import (
@@ -87,9 +87,10 @@ def create_report(
             message="내용 분석에 실패해 리포트를 만들지 못했습니다",
         ))
     else:
-        _store(task_id, ReportTaskDone(
-            status="done", result=report_dummy.build_report(session_id, req)
-        ))
+        # llm 모드면 백그라운드로 전사부터 시작한다. 더미면 즉시 결과가 온다.
+        done = report_pipeline.create_report(session_id, req, task_id)
+        if done is not None:
+            _store(task_id, done)
 
     report_dummy.remember(idempotency_key, task_id)
     return TaskAccepted(task_id=task_id)
@@ -111,9 +112,10 @@ def retry_report(
         raise ApiError(400, "INVALID_REQUEST", "재시도할 축을 지정해야 합니다")
     _check_answers(req.answers)
 
-    result = report_dummy.build_retry(session_id, req)
     task_id = report_dummy.new_report_task_id()
-    _store(task_id, ReportRetryTaskDone(status="done", result=result))
+    done = report_pipeline.create_retry(session_id, req, task_id)
+    if done is not None:
+        _store(task_id, done)
     report_dummy.remember(idempotency_key, task_id)
     return TaskAccepted(task_id=task_id)
 

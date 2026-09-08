@@ -384,6 +384,96 @@ def generate_followup(
 
 
 # ---------------------------------------------------------------------------
+# 되묻기
+#
+# 답변이 부실할 때 같은 질문을 다시 묻는다. 새 질문이 아니므로 문항 수에
+# 포함되지 않는다. 지금까지는 "조금 더 자세히 말씀해 주시겠어요?" 한 문장이
+# 모든 상황에 나갔는데, 무엇이 빠졌는지 짚어주지 않으면 지원자가 두 번째에도
+# 같은 대답을 한다.
+#
+# 꼬리질문과 다른 점은 하나다. 꼬리질문은 답변을 파고들어 다음으로 넘어가고,
+# 되묻기는 같은 것을 다시 묻는다. 새 주제를 열면 되묻기가 아니다.
+# ---------------------------------------------------------------------------
+
+REASK_SYSTEM_PROMPT = """당신은 채용 면접관입니다. 지원자의 답변이 너무 짧아 다시 묻습니다.
+
+같은 질문을 다시 묻는 자리입니다. 새로운 것을 묻지 않습니다.
+지원자가 방금 답한 그 질문에 대해 더 말하게 하는 것이 목적입니다.
+
+규칙
+- 무엇을 더 말해야 하는지 구체적으로 짚어 줍니다.
+  「조금 더 자세히」처럼 막연하게 말하면 지원자가 또 같은 대답을 합니다.
+  원래 질문에서 아직 답이 나오지 않은 부분을 골라 그것을 묻습니다.
+- 새 주제를 열지 않습니다. 원래 질문의 범위 안에서만 묻습니다.
+- 답변이 짧았다고 지적하지 않습니다.
+  「답변이 부족합니다」, 「성의가 없으시네요」 같은 말은 쓰지 않습니다.
+  지원자가 위축되면 두 번째 답변은 더 짧아집니다.
+- 위 대화에 실제로 나온 말만 근거로 삼습니다.
+  지원자가 말하지 않은 것을 말했다고 전제하지 않습니다.
+- 한 가지만 묻습니다.
+  「어떤 개념을, 어느 프로젝트의 어떤 작업에」처럼 묻는 대상이 여럿이면
+  하나만 남깁니다. 나머지는 지원자가 답하면서 자연스럽게 따라옵니다.
+  예 · 아니오로 답하고 끝날 수 있는 질문은 피합니다.
+- 짧게 씁니다. 한 문장으로, 60자 안팎으로 씁니다.
+- 한국어 존댓말로 씁니다.
+- 번호, 머리말, 따옴표를 붙이지 않고 질문 문장만 씁니다."""
+
+
+class GeneratedReask(BaseModel):
+    text: str = Field(description="지원자에게 그대로 읽어줄 되묻기 문장")
+
+
+def generate_reask(
+    *,
+    history: list[Exchange],
+    persona: Persona,
+    job_role: str,
+) -> str:
+    """같은 질문을 다시 묻는 문장 하나.
+
+    history의 마지막 항목이 방금 짧게 답한 질문과 답변이다.
+    """
+    if not history:
+        raise LlmError("되물으려면 직전 질문과 답변이 필요합니다")
+
+    parts = [f"지원 직무는 「{job_role}」입니다.", PERSONA_GUIDE[persona]]
+    parts.append("지금까지 이 주제에서 오간 대화입니다.\n\n" + _topic_lines(history))
+    parts.append(
+        "마지막 질문에 대한 답변이 너무 짧았습니다. "
+        "같은 질문을 다시 묻되, 무엇을 더 말해야 하는지 짚어 주세요."
+    )
+
+    try:
+        response = _client().messages.parse(
+            model=model(),
+            max_tokens=MAX_TOKENS,
+            system=[{
+                "type": "text",
+                "text": REASK_SYSTEM_PROMPT,
+                "cache_control": {"type": "ephemeral"},
+            }],
+            messages=[{"role": "user", "content": "\n\n".join(parts)}],
+            output_config={"effort": effort()},
+            output_format=GeneratedReask,
+        )
+    except anthropic.APIStatusError as e:
+        raise LlmError(f"되묻기 생성 요청이 실패했습니다 (HTTP {e.status_code})") from e
+    except anthropic.APIConnectionError as e:
+        raise LlmError("되묻기 생성 서버에 연결하지 못했습니다") from e
+
+    if response.stop_reason == "refusal":
+        detail = getattr(response.stop_details, "category", None)
+        raise LlmError(f"되묻기 생성이 거부되었습니다 (category={detail})")
+
+    parsed = response.parsed_output
+    if parsed is None or not parsed.text.strip():
+        raise LlmError("되묻기 생성 결과가 비어 있습니다")
+
+    _log_usage(response, 1, kind="되묻기")
+    return parsed.text.strip()
+
+
+# ---------------------------------------------------------------------------
 # 모드 판별
 # ---------------------------------------------------------------------------
 

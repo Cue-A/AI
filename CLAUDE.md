@@ -46,6 +46,7 @@ ai/
   llm.py              Claude로 주질문 · 꼬리질문 생성. 모델 · effort · 프롬프트
   resume.py           이력서 다운로드 (PDF · Word · 텍스트)
   answers.py          답변 오디오 → 전사 · 발화 지표 (STT 이음매)
+  voice.py            질문 텍스트 → 음성 URL (TTS 이음매)
   stt.py              Whisper 전사와 발화 · 마무리 지표 (B 담당)
   tasks.py            진짜 백그라운드 실행 (스레드풀)
   pipeline.py         세션 시작 · 답변 처리 흐름 — 더미/llm 분기
@@ -56,6 +57,7 @@ ai/
   report_router.py    리포트 엔드포인트
   report_schemas.py   리포트 생성 계약의 요청 · 응답 모델
   report_dummy.py     점수 생성, 축 재정규화, 회차 비교
+  report_pipeline.py  리포트 흐름 — 전사 후 조립. 더미/llm 분기
 main.py               FastAPI 진입점, 예외 핸들러, /health · /ready
 tests/
   test_schemas.py     계약서 JSON 예시 파싱
@@ -68,6 +70,8 @@ tests/
   test_tasks.py       백그라운드 실행
   test_pipeline.py    세션 시작 · 답변 처리 흐름
   test_companies.py   인재상 데이터 — 파싱 잔재 · 스키마
+  test_report_pipeline.py  리포트 전사 흐름 · 채점 이음매
+  test_voice.py       음성 합성 이음매 — 실패해도 세션이 이어지는지
 scripts/
   compare_models.py   같은 이력서로 모델을 바꿔 돌려 품질 비교
 Dockerfile            base / dummy / full 멀티스테이지
@@ -86,11 +90,39 @@ README.md             백엔드 담당자용 curl 가이드
 ```
 
 ```
-AI_MODE=dummy   전사하지 않는다. audio_url 문자열로 길이를 지어낸다
-                백엔드가 지금 검증하고 있는 동작이 이것이다
-AI_MODE=llm     ai/answers.py가 오디오를 내려받아 ai/stt.py로 전사한다
-                발화 길이는 실측값이 되고, 꼬리질문은 답변 텍스트를 근거로 만든다
+AI_MODE=dummy                전사하지 않는다. audio_url 문자열로 길이를 지어낸다
+                             백엔드가 지금 검증하고 있는 동작이 이것이다
+AI_MODE=dummy + USE_STT=1    전사만 한다. 질문은 고정 문장. 요금 0원
+                             GPU 담당이 통합을 확인할 때 쓴다
+AI_MODE=llm                  전사도 하고 질문도 생성한다. 세션당 약 113원
+USE_TTS=1                    질문을 음성으로 만든다. 외부 API라 별도 요금
 ```
+
+**세 스위치를 따로 둡니다.** 성격이 다르기 때문입니다.
+
+```
+STT   우리 GPU에서 돈다. 요금 없음
+LLM   Claude API. 세션당 113원
+TTS   외부 API. Claude와 별개로 요금이 붙는다
+```
+
+한 스위치에 묶어 두면 "전사가 되는지"만 보려 해도 주질문 생성과
+음성 합성까지 돌아 그만큼 돈이 나갑니다.
+
+### 음성 합성이 실패하면 세션을 멈추지 않습니다
+
+계약서 8장 규칙입니다. `TTS_FAILED`는 재시도하지 않고 `audio_url`을
+null로 둔 채 텍스트로 진행합니다. 질문 텍스트가 이미 만들어진 뒤라
+음성 때문에 면접을 끊는 것은 손해가 큽니다.
+
+`ai/tts.py`는 B가 붙입니다. 모양은 이렇습니다.
+
+```python
+def synthesize(text: str, persona: str) -> str:
+    """음성을 만들어 어딘가에 올리고 재생 가능한 URL을 준다."""
+```
+
+모듈이 없어도, 함수 이름이 달라도, 합성이 터져도 서버는 돕니다.
 
 `DummySession.topic_history`가 지금 주제의 질문·답변 쌍을 들고 있습니다.
 주질문이 나오면 비웁니다. 꼬리질문은 직전 답변을 파고드는 것이라
@@ -102,10 +134,31 @@ AI_MODE=llm     ai/answers.py가 오디오를 내려받아 ai/stt.py로 전사�
 **아직 남은 것**
 
 ```
-되묻기 문구      고정 문장이다. 답변을 읽고 다시 묻는 문구는 아직 없다
 verdict 2단계    LLM 판정. 일관성 검증이 끝나야 켠다. 지금은 항상 None
 내용 채점        report_dummy의 점수가 해시다. 초안은 docs/내용채점_프롬프트_초안.md
 ```
+
+### 내용 채점을 붙이는 자리
+
+리포트는 llm 모드에서 답변을 전사한 뒤 조립합니다. 전사는 세션 진행 중에
+이미 한 번 했으므로 `ai/stt.py`의 캐시에서 나옵니다. 두 번 전사하면
+GPU 사용 시간이 두 배가 됩니다.
+
+D가 할 일은 함수 하나를 꽂는 것입니다.
+
+```python
+def scorer(question_text: str, answer_text: str) -> int:   # 0~100
+    ...
+
+report_dummy.CONTENT_SCORER = scorer
+```
+
+꽂으면 그때부터 게이트가 진짜 답변을 보고 걸립니다. 꽂기 전에는 해시
+더미가 쓰이고, 백엔드가 쓰던 offtopic · partial 트리거도 그대로 돕니다.
+채점이 터져도 리포트 전체를 날리지 않고 더미 점수로 이어갑니다.
+
+되묻기도 답변을 읽고 만듭니다. 무엇이 빠졌는지 짚어 주지 않으면
+지원자가 두 번째에도 같은 대답을 하기 때문입니다.
 
 ## 절대 하지 말 것
 

@@ -53,9 +53,10 @@ def fake_llm():
          mock_patch.object(llm, "generate_main_questions", side_effect=generate) as gen, \
          mock_patch.object(answers, "transcribe", side_effect=transcribe) as stt, \
          mock_patch.object(llm, "generate_followup",
-                           return_value="[꼬리질문] 그 판단의 근거는 무엇이었나요?") as fup:
+                           return_value="[꼬리질문] 그 판단의 근거는 무엇이었나요?") as fup,          mock_patch.object(llm, "generate_reask",
+                           return_value="[되묻기] 어떤 기준으로 정하셨는지 말씀해 주시겠어요?") as rsk:
         yield SimpleHolder(fetch=fetch, generate=gen, generated=generated,
-                           transcribe=stt, followup=fup)
+                           transcribe=stt, followup=fup, reask=rsk)
 
 
 class SimpleHolder:
@@ -448,3 +449,187 @@ def test_더미_모드는_전사를_부르지_않는다(client, auth, fake_llm):
 
     assert fake_llm.transcribe.call_count == 0
     assert fake_llm.followup.call_count == 0
+
+
+# ---------------------------------------------------------------------------
+# 되묻기 — 답변이 짧으면 같은 질문을 다시 묻는다
+# ---------------------------------------------------------------------------
+
+
+def _until(client, auth, sid, item, kind, audio, limit=12):
+    """원하는 종류가 나올 때까지 답변을 넣는다."""
+    for _ in range(limit):
+        done, _ = _answer(client, auth, sid, item, audio=audio)
+        item = done["result"]
+        if item["type"] in (kind, "session_end"):
+            return item
+    return item
+
+
+def test_되묻기_문구를_답변을_읽고_만든다(client, auth, llm_mode, fake_llm):
+    """고정 문장 하나로는 지원자가 두 번째에도 같은 대답을 한다."""
+    sid, first = _first_question(client, auth)
+    item = _until(client, auth, sid, first, "reask", "https://s3.../ans_short.webm")
+
+    assert item["type"] == "reask", item
+    assert item["text"] == "[되묻기] 어떤 기준으로 정하셨는지 말씀해 주시겠어요?"
+    assert fake_llm.reask.called
+
+    kwargs = fake_llm.reask.call_args.kwargs
+    assert kwargs["persona"] == "pressure"
+    assert kwargs["job_role"] == "백엔드 개발"
+    assert kwargs["history"], "직전 대화가 넘어가지 않았습니다"
+
+
+def test_되묻기는_계약대로_null_필드를_지킨다(client, auth, llm_mode, fake_llm):
+    """문구를 새로 만들어도 category · difficulty는 null이어야 한다."""
+    sid, first = _first_question(client, auth)
+    item = _until(client, auth, sid, first, "reask", "https://s3.../ans_short.webm")
+
+    assert item["type"] == "reask"
+    assert item["category"] is None
+    assert item["difficulty"] is None
+    assert item["reask_of"] == item["question_id"].rstrip("r")
+    assert item["is_spare_topic"] is False
+    assert item["is_replay"] is False
+
+
+def test_되묻기_생성이_실패해도_세션은_이어진다(client, auth, llm_mode, fake_llm):
+    fake_llm.reask.side_effect = LlmError("생성 실패")
+    sid, first = _first_question(client, auth)
+    item = _until(client, auth, sid, first, "reask", "https://s3.../ans_short.webm")
+
+    assert item["type"] == "reask", item
+    assert item["text"]
+    assert not item["text"].startswith("[되묻기]")
+
+
+def test_더미_모드는_되묻기도_고정_문장이다(client, auth, fake_llm):
+    res = client.post("/ai/sessions", headers=auth, json=BODY)
+    sid = res.json()["session_id"]
+    done, _ = poll_until_done(client, auth, res.json()["task_id"])
+    item = _until(client, auth, sid, done["result"], "reask", "https://s3.../ans_short.webm")
+
+    assert item["type"] == "reask"
+    assert item["text"] == dummy.REASK_QUESTION
+    assert fake_llm.reask.call_count == 0
+
+
+# ---------------------------------------------------------------------------
+# USE_STT — 요금 없이 전사만 확인하는 모드
+#
+# GPU 담당이 통합을 확인할 때 LLM까지 켜면 세션마다 78원이 나간다.
+# Whisper는 우리 GPU에서 돌아 요금이 없으므로 따로 켤 수 있어야 한다.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def stt_only(monkeypatch):
+    monkeypatch.setenv("AI_MODE", "dummy")
+    monkeypatch.setenv("USE_STT", "1")
+
+
+def test_USE_STT만_켜면_전사는_하고_질문은_고정이다(client, auth, stt_only, fake_llm):
+    res = client.post("/ai/sessions", headers=auth, json=BODY)
+    sid = res.json()["session_id"]
+    done, _ = poll_until_done(client, auth, res.json()["task_id"])
+    first = done["result"]
+
+    # 주질문은 LLM을 부르지 않는다 — 요금이 나가면 안 된다
+    assert fake_llm.generate.call_count == 0
+    assert not first["text"].startswith("[생성됨]")
+
+    item = first
+    for _ in range(10):
+        body, _ = _answer(client, auth, sid, item)
+        item = body["result"]
+        if item["type"] in ("followup", "session_end"):
+            break
+
+    # 전사는 돌았다
+    assert fake_llm.transcribe.called
+    # 꼬리질문은 고정 문장이다
+    assert fake_llm.followup.call_count == 0
+    if item["type"] == "followup":
+        assert not item["text"].startswith("[꼬리질문]")
+
+
+def test_USE_STT가_꺼져_있으면_전사하지_않는다(client, auth, fake_llm, monkeypatch):
+    monkeypatch.setenv("AI_MODE", "dummy")
+    monkeypatch.delenv("USE_STT", raising=False)
+
+    res = client.post("/ai/sessions", headers=auth, json=BODY)
+    sid = res.json()["session_id"]
+    done, _ = poll_until_done(client, auth, res.json()["task_id"])
+    _answer(client, auth, sid, done["result"])
+
+    assert fake_llm.transcribe.call_count == 0
+
+
+def test_llm_모드면_USE_STT_없이도_전사한다(client, auth, llm_mode, fake_llm):
+    """기존 동작이 바뀌면 안 된다."""
+    sid, first = _first_question(client, auth)
+    _answer(client, auth, sid, first)
+    assert fake_llm.transcribe.called
+
+
+# ---------------------------------------------------------------------------
+# 질문 음성 — USE_TTS
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def fake_tts(monkeypatch):
+    """B가 붙일 ai/tts.py를 흉내낸다."""
+    import sys
+    import types
+
+    calls = []
+    module = types.ModuleType("ai.tts")
+
+    def synthesize(text, persona):
+        calls.append((text, persona))
+        return f"https://s3.../tts/{len(calls)}.mp3"
+
+    module.synthesize = synthesize
+    monkeypatch.setitem(sys.modules, "ai.tts", module)
+    monkeypatch.setenv("USE_TTS", "1")
+    return calls
+
+
+def test_USE_TTS를_켜면_질문에_음성이_붙는다(client, auth, llm_mode, fake_llm, fake_tts):
+    sid, first = _first_question(client, auth)
+
+    assert first["audio_url"] == "https://s3.../tts/1.mp3"
+    assert fake_tts[0][0] == first["text"]
+    assert fake_tts[0][1] == "pressure"      # BODY의 페르소나
+
+    body, _ = _answer(client, auth, sid, first)
+    assert body["result"]["audio_url"].startswith("https://s3.../tts/")
+
+
+def test_음성_합성이_실패하면_텍스트만_나간다(client, auth, llm_mode, fake_llm, monkeypatch):
+    """계약서 8장 — TTS_FAILED는 재시도 없이 audio_url을 null로 둔다."""
+    import sys
+    import types
+
+    module = types.ModuleType("ai.tts")
+
+    def boom(text, persona):
+        raise RuntimeError("API 한도 초과")
+
+    module.synthesize = boom
+    monkeypatch.setitem(sys.modules, "ai.tts", module)
+    monkeypatch.setenv("USE_TTS", "1")
+
+    _, first = _first_question(client, auth)
+
+    assert first["audio_url"] is None
+    assert first["text"], "질문 텍스트는 그대로 나가야 합니다"
+
+
+def test_USE_TTS가_꺼져_있으면_샘플_mp3가_나간다(client, auth, llm_mode, fake_llm, monkeypatch):
+    """모르는 사이에 요금이 나가면 안 된다."""
+    monkeypatch.delenv("USE_TTS", raising=False)
+    _, first = _first_question(client, auth)
+    assert first["audio_url"] == dummy.SAMPLE_AUDIO_URL

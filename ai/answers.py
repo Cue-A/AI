@@ -23,10 +23,34 @@ import httpx2
 
 logger = logging.getLogger("cue.ai.answers")
 
+# STT만 따로 켜는 스위치.
+#
+# 전사 확인과 LLM 질문 생성은 성격이 다르다. Whisper는 우리 GPU에서 돌아
+# 요금이 없고, LLM은 호출마다 돈이 나간다. 둘이 한 스위치에 묶여 있으면
+# "전사가 되는지"만 보려 해도 주질문 생성까지 돌아 78원이 나간다.
+#
+#   AI_MODE=dummy                    전사 안 함. 백엔드가 쓰는 기본값
+#   AI_MODE=dummy + USE_STT=1        전사만 함. 질문은 고정 문장. 요금 0원
+#   AI_MODE=llm                      전사도 하고 질문도 생성. 요금 발생
+STT_ENV = "USE_STT"
+
 DOWNLOAD_TIMEOUT_SEC = 60.0
 
 # 60초 답변이 webm으로 1MB 안팎이다. 넉넉히 잡되 무한정 받지는 않는다.
 MAX_BYTES = 50 * 1024 * 1024
+
+
+def stt_enabled() -> bool:
+    """전사를 실제로 돌리는가.
+
+    USE_STT를 켜면 AI_MODE가 dummy여도 전사한다. GPU 담당이 요금 없이
+    통합을 확인할 수 있게 하려는 것이다.
+    """
+    from ai import llm
+
+    if os.environ.get(STT_ENV, "").strip().lower() in ("1", "true", "yes", "on"):
+        return True
+    return llm.llm_enabled()
 
 
 class SttError(Exception):
