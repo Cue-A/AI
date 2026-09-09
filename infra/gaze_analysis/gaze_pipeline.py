@@ -9,8 +9,8 @@ import uuid
 
 import requests
 
-from extract_l2cs_warm import extract_l2cs_gaze_warm
-from gaze_metrics import compute_gaze_metrics
+from .extract_l2cs_warm import extract_l2cs_gaze_warm
+from .gaze_metrics import compute_gaze_metrics
 
 DOWNLOAD_DIR = "/tmp/gaze_downloads"
 

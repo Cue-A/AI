@@ -1,7 +1,7 @@
 """
-gpu0(Whisper): 아직 B가 설치 전이라 더미로 대체. 자리만 잡아둠.
-gpu1(시선): 이미 검증된 L2CS-Net을 실제로 돌려서, GPU 큐 분리가
-            진짜 GPU 작업에서도 문제없이 동작하는지 확인한다.
+gpu0(Whisper): 아직 B가 설치 전이라 더미로 대체.
+gpu1(시선): 실제 프로덕션 파이프라인(gaze_analysis.gaze_pipeline)을 그대로 호출.
+            presigned URL 다운로드 -> 5fps 분석 -> 구간 지표 변환 -> 삭제까지 전부 포함.
 """
 import time
 from celery_app import app
@@ -14,25 +14,20 @@ def transcribe_dummy(audio_path: str) -> dict:
     return {"audio_path": audio_path, "text": "(더미 전사)", "status": "done", "queue": "gpu0"}
 
 
-@app.task(name="tasks.analyze_gaze_real")
-def analyze_gaze_real(video_path: str, weights_path: str) -> dict:
-    """gpu1 큐. 실제 L2CS-Net으로 진짜 추론."""
-    from l2cs import Pipeline
-    import torch
-    import cv2
+@app.task(name="tasks.analyze_gaze_video")
+def analyze_gaze_video(presigned_url: str, weights_path: str, question_id: str = "") -> dict:
+    """
+    gpu1 큐. presigned URL 하나를 받아 실제 프로덕션 파이프라인을 그대로 돌린다.
+    모델은 이 워커 프로세스 안에서 캐시되어 재사용된다 (extract_l2cs_warm.py의
+    _pipeline_cache). 즉 같은 워커가 두 번째 요청부터는 콜드스타트 없이 빠르게 처리한다.
+    """
+    from gaze_analysis.gaze_pipeline import analyze_gaze_from_presigned_url
 
-    p = Pipeline(weights=weights_path, arch="ResNet50", device=torch.device("cuda"))
-    cap = cv2.VideoCapture(video_path)
-    ok, frame = cap.read()
-    cap.release()
-    if not ok:
-        return {"video_path": video_path, "status": "frame_read_failed", "queue": "gpu1"}
-
-    result = p.step(frame)
-    return {
-        "video_path": video_path,
-        "yaw": float(result.yaw[0]) if len(result.yaw) > 0 else None,
-        "pitch": float(result.pitch[0]) if len(result.pitch) > 0 else None,
-        "status": "done",
-        "queue": "gpu1",
-    }
+    result = analyze_gaze_from_presigned_url(
+        presigned_url=presigned_url,
+        weights_path=weights_path,
+        question_id=question_id,
+        device="cuda",
+    )
+    result["queue"] = "gpu1"
+    return result
