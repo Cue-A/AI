@@ -82,7 +82,13 @@ GATE_REASON = "content_relevance_low"
 # 전사 텍스트가 있을 때만 불린다. D 담당이며 프롬프트 초안은
 # docs/내용채점_프롬프트_초안.md에 있다. 여기에 함수를 꽂으면 그때부터
 # 게이트가 진짜 답변을 보고 걸린다.
-CONTENT_SCORER = None
+from ai.llm import llm_enabled
+
+if llm_enabled():
+    from ai.content_eval import score_content
+    CONTENT_SCORER = score_content
+else:
+    CONTENT_SCORER = None
 
 # 최근 3회차 변화가 이 값 미만이면 정체로 본다.
 STALLED_THRESHOLD = 3
