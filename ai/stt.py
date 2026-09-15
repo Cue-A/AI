@@ -131,6 +131,103 @@ def compute_ending_metrics(full_text: str, segments, audio_duration: float) -> d
 
 
 # ---------------------------------------------------------------------------
+# 3-2. 머뭇거림 지표 — 필러워드 개수 대신 쓰는 유창성 지표
+#
+# 설계 배경: Whisper가 "음"/"어" 같은 필러를 텍스트로 안 뱉고 지워버리는 걸
+# 확인했고(직접 청취로 대조 검증), 그 필러가 차지했던 시간은 어차피 단어 사이
+# gap(=silence_segments)에 이미 반영되고 있다는 것도 확인했다 — 필러로 채운
+# 시간이든 진짜 침묵이든 Whisper 입장에선 둘 다 "인식된 단어 사이의 빈 시간"
+# 이라 구분이 안 된다. 그래서 필러를 텍스트로 복원하는 시도(파인튜닝 등) 대신,
+# 이미 있는 침묵 지표에 발화 속도 변동성 + 인접 단어 반복을 더해서
+# "얼마나 매끄럽게 말했는가"를 종합적으로 표현하기로 했다.
+#
+# 리포트 계약(축별 세부 지표 axes.speech.metrics)에는 이 중 hesitation_score를
+# 대표 필드로 올린다. speech_rate_cv/repetition_count는 원인 파악용 보조 필드.
+#
+# 알려진 한계:
+# - repetition_count는 "바로 인접한 동일 토큰"만 잡는 보수적인 버전이다.
+#   ("그니까 그니까 저는" 처럼 사이에 다른 말이 끼면 못 잡음)
+# - hesitation_score의 가중치(50/30/20)는 3명 데이터로 임시로 잡은 값이라
+#   실제 서비스 데이터가 쌓이면 재조정이 필요하다.
+# ---------------------------------------------------------------------------
+
+def _extract_words(segments):
+    """(단어 텍스트, 시작, 끝) 튜플 리스트. compute_speech_metrics의 word_times와
+    달리 반복 탐지를 위해 텍스트도 같이 들고 있어야 해서 별도로 뽑는다."""
+    words = []
+    for seg in segments:
+        for w in seg.words:
+            text = w.word.strip()
+            if text:
+                words.append((text, float(w.start), float(w.end)))
+    return words
+
+
+def compute_fluency_metrics(segments, silence_segments: list, speech_duration_sec: float) -> dict:
+    words = _extract_words(segments)
+
+    # --- 발화 속도 변동성: 침묵으로 끊기는 "이어 말한 덩어리" 단위로 속도(단어/초)를
+    # 구하고, 덩어리 간 속도의 변동계수(CV = 표준편차/평균)를 낸다.
+    # 들쭉날쭉할수록(급하게 몰아치다 갑자기 느려지는 식) 값이 커진다.
+    boundaries = sorted(s["start"] for s in silence_segments)
+    chunk_rates = []
+    chunk_word_count = 0
+    chunk_start_time = words[0][1] if words else 0.0
+    boundary_i = 0
+
+    for _, start, end in words:
+        chunk_word_count += 1
+        if boundary_i < len(boundaries) and end >= boundaries[boundary_i]:
+            duration = end - chunk_start_time
+            if duration > 0:
+                chunk_rates.append(chunk_word_count / duration)
+            chunk_word_count = 0
+            chunk_start_time = end
+            boundary_i += 1
+
+    if chunk_word_count > 0 and words:
+        duration = words[-1][2] - chunk_start_time
+        if duration > 0:
+            chunk_rates.append(chunk_word_count / duration)
+
+    if len(chunk_rates) >= 2:
+        mean_rate = sum(chunk_rates) / len(chunk_rates)
+        variance = sum((r - mean_rate) ** 2 for r in chunk_rates) / len(chunk_rates)
+        speech_rate_cv = round((variance ** 0.5) / mean_rate, 3) if mean_rate > 0 else 0.0
+    else:
+        # 침묵으로 끊긴 덩어리가 1개 이하면 "변동"이라는 개념 자체가 성립 안 함
+        speech_rate_cv = 0.0
+
+    # --- 인접 반복: 바로 옆 단어와 똑같은 토큰이 연달아 나온 횟수
+    repetition_count = 0
+    for i in range(1, len(words)):
+        prev_text = words[i - 1][0].rstrip(".,!?~ㅋㅎ")
+        curr_text = words[i][0].rstrip(".,!?~ㅋㅎ")
+        if prev_text and prev_text == curr_text:
+            repetition_count += 1
+
+    # --- 종합 점수 (0~100, 높을수록 머뭇거림 심함): 침묵 비율 50% + 속도 변동 30% + 반복 20%
+    silence_ratio = 0.0
+    if speech_duration_sec > 0:
+        silence_ratio = sum(s["duration"] for s in silence_segments) / speech_duration_sec
+
+    hesitation_score = round(
+        min(100.0, (
+            min(silence_ratio, 1.0) * 50
+            + min(speech_rate_cv, 1.0) * 30
+            + min(repetition_count / 5, 1.0) * 20
+        )),
+        1,
+    )
+
+    return {
+        "speech_rate_cv": speech_rate_cv,
+        "repetition_count": repetition_count,
+        "hesitation_score": hesitation_score,
+    }
+
+
+# ---------------------------------------------------------------------------
 # 4. 캐시 — session_id + question_id
 # (세션 중 꼬리질문 생성용으로 이미 전사한 걸 리포트가 재사용)
 # ---------------------------------------------------------------------------
@@ -190,6 +287,9 @@ def process_answer(
     segments, duration = transcribe_core(audio_path)
     speech_metrics = compute_speech_metrics(segments)
     ending_metrics = compute_ending_metrics(speech_metrics["text"], segments, duration)
+    fluency_metrics = compute_fluency_metrics(
+        segments, speech_metrics["silence_segments"], speech_metrics["speech_duration_sec"]
+    )
 
     result = {
         "session_id": session_id,
@@ -197,6 +297,7 @@ def process_answer(
         "is_timeout": bool(is_timeout),
         **speech_metrics,
         **ending_metrics,
+        **fluency_metrics,
     }
 
     cache_set(session_id, question_id, result)
