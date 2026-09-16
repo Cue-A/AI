@@ -74,6 +74,8 @@ tests/
   test_companies.py   인재상 데이터 — 파싱 잔재 · 스키마
   test_report_pipeline.py  리포트 전사 흐름 · 채점 이음매
   test_voice.py       음성 합성 이음매 — 실패해도 세션이 이어지는지
+  test_store.py       세션 · 작업 보관소. Redis 없어도 뜨는지, 워커 여러 개
+  test_end_to_end.py  자소서 → 면접 → 리포트 한 바퀴
 scripts/
   compare_models.py   같은 이력서로 모델을 바꿔 돌려 품질 비교
 Dockerfile            base / dummy / full 멀티스테이지
