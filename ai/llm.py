@@ -494,5 +494,10 @@ def generate_reask(
 
 
 def llm_enabled() -> bool:
-    """AI_MODE가 dummy가 아니면 실제 생성을 쓴다."""
-    return os.environ.get("AI_MODE", "dummy") != "dummy"
+    """AI_MODE가 dummy가 아니면 실제 생성을 쓴다.
+
+    값을 열거하지 않고 dummy만 비교한다. 팀에서 llm · live · full · production을
+    섞어 쓰는데, 목록으로 막아두면 오타 하나에 조용히 더미로 돌아 "왜 고정 문장이
+    나오지"를 한참 찾게 된다. 문서에서 쓰는 이름은 llm이다.
+    """
+    return os.environ.get("AI_MODE", "dummy").strip() != "dummy"
