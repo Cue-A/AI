@@ -8,6 +8,7 @@ LLM · STT · 시선 분석을 호출하지 않는다.
 import hashlib
 import itertools
 import logging
+import os
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -84,11 +85,40 @@ GATE_REASON = "content_relevance_low"
 # 게이트가 진짜 답변을 보고 걸린다.
 from ai.llm import llm_enabled
 
-if llm_enabled():
+# 직접 꽂고 싶을 때 쓰는 자리. 테스트가 여기에 가짜 채점기를 넣는다.
+# None이면 아래 _scorer()가 환경변수를 보고 정한다.
+CONTENT_SCORER = None
+
+# 내용 채점만 따로 끄는 스위치. 채점은 문항마다 LLM을 부르므로
+# 요금이 나간다. STT · TTS와 같은 방식으로 따로 켜고 끈다.
+#
+#   설정 안 함        AI_MODE를 따라간다 (llm이면 켜짐)
+#   USE_CONTENT_SCORING=0   AI_MODE가 llm이어도 끈다. 해시 점수로 돈다
+SCORING_ENV = "USE_CONTENT_SCORING"
+
+
+def content_scoring_enabled() -> bool:
+    raw = os.environ.get(SCORING_ENV, "").strip().lower()
+    if raw in ("0", "false", "no", "off"):
+        return False
+    if raw in ("1", "true", "yes", "on"):
+        return True
+    return llm_enabled()
+
+
+def _scorer():
+    """지금 쓸 채점기. 호출 시점에 정한다.
+
+    import 시점에 정하면 환경변수를 바꿔도 반영되지 않고, 테스트가
+    실제 API를 부를지 여부가 import 순서에 좌우된다.
+    """
+    if CONTENT_SCORER is not None:
+        return CONTENT_SCORER
+    if not content_scoring_enabled():
+        return None
     from ai.content_eval import score_content
-    CONTENT_SCORER = score_content
-else:
-    CONTENT_SCORER = None
+
+    return score_content
 
 # 최근 3회차 변화가 이 값 미만이면 정체로 본다.
 STALLED_THRESHOLD = 3
@@ -284,7 +314,8 @@ def _content_score(
 
     None이면 부르는 쪽이 해시 더미를 쓴다.
     """
-    if CONTENT_SCORER is None or not transcripts:
+    scorer = _scorer()
+    if scorer is None or not transcripts:
         return None
 
     text = transcripts.get(row.question_id, "").strip()
@@ -292,7 +323,7 @@ def _content_score(
         return None
 
     try:
-        score = int(CONTENT_SCORER(row.text, text))
+        score = int(scorer(row.text, text))
     except Exception:
         # 채점이 터져도 리포트 전체를 날리지는 않는다. 더미 점수로 이어간다.
         logger.warning("내용 채점에 실패해 더미 점수를 씁니다: %s", row.question_id)

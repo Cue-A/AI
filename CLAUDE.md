@@ -38,7 +38,9 @@ docs/                 계약서와 설계 문서. 이것이 스펙입니다
   백엔드_요청사항.md                    백엔드 전달용. P0 / P1 / 배포
   기업목록_프론트전달용.md              프론트 전달용. 기업 선택 UI
   시선모델_선정.md                      gaze 축 모델 비교와 결정 (L2CS-Net)
-  내용채점_프롬프트_초안.md              D 전달용. STT 붙으면 쓸 채점 Rubric
+  내용채점_프롬프트_초안.md              D 전달용. 두 단계 채점 Rubric (검증 완료)
+  앵커답변_초안.md                      D 전달용. 기준 답변 6종 + 블라인드 양식
+  난이도_블라인드채점.md                 L1·L2·L3가 사람 눈에 갈리는지 확인
 ai/
   session_plan.py     세션 구성 로직. 검증된 파일 — 아래 예외 외에는 수정 금지
   schemas.py          계약서의 요청 · 응답 Pydantic 모델
@@ -72,6 +74,8 @@ tests/
   test_companies.py   인재상 데이터 — 파싱 잔재 · 스키마
   test_report_pipeline.py  리포트 전사 흐름 · 채점 이음매
   test_voice.py       음성 합성 이음매 — 실패해도 세션이 이어지는지
+  test_store.py       세션 · 작업 보관소. Redis 없어도 뜨는지, 워커 여러 개
+  test_end_to_end.py  자소서 → 면접 → 리포트 한 바퀴
 scripts/
   compare_models.py   같은 이력서로 모델을 바꿔 돌려 품질 비교
 Dockerfile            base / dummy / full 멀티스테이지

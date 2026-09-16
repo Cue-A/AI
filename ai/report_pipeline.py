@@ -95,8 +95,7 @@ def create_report(session_id: str, req: ReportCreateRequest, task_id: str) -> Op
         stages=REPORT_STAGES,
         with_progress=True,
     )
-    dummy.TASKS[task_id] = task
-    dummy.evict_oldest(dummy.TASKS, dummy.MAX_TASKS)
+    dummy.store_task(task_id, task)
     return None
 
 
@@ -129,8 +128,7 @@ def create_retry(session_id: str, req: ReportRetryRequest, task_id: str) -> Opti
         stages=("transcribing", "composing"),
         with_progress=True,
     )
-    dummy.TASKS[task_id] = task
-    dummy.evict_oldest(dummy.TASKS, dummy.MAX_TASKS)
+    dummy.store_task(task_id, task)
     return None
 
 

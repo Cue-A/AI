@@ -19,7 +19,7 @@
 
 ```
 content   내용    관련성 · 구체성 · 논리성
-speech    말하기  속도 · 필러 · 침묵 · 마무리
+speech    말하기  속도 · 침묵 · 머뭇거림 · 마무리
 gaze      시선    응시 유지 · 회피 빈도
 ```
 
@@ -299,7 +299,7 @@ composing      리포트 조립
 | `overall.partial` | 실패한 축이 있는가 |
 | `axes.*.status` | `ok` \| `failed` |
 | `axes.*.score` | 실패 시 null |
-| `metrics` | 축별 세부 지표. **이번에는 빈 객체** |
+| `metrics` | 축별 세부 지표. 확정된 축부터 키가 채워진다 |
 | `evidence` | 감점·강점 근거 배열. 항상 존재 (비어 있을 수 있음) |
 | `axes.*.error_code` | `status`가 `failed`일 때만 나온다. `ok`·`skipped`에는 필드가 없다 |
 | `axes.*.reason` | `status`가 `skipped`일 때만 나온다 |
@@ -308,6 +308,36 @@ composing      리포트 조립
 
 `metrics`가 비어 있는 것은 오류가 아니다.
 축별 지표가 확정되는 대로 키가 추가되며, 기존 필드는 바뀌지 않는다.
+
+### 말하기 축 metrics — 확정
+
+```json
+"speech": {
+  "status": "ok",
+  "score": 61,
+  "display": 4,
+  "metrics": {
+    "hesitation_score": 32,
+    "speech_rate_cv": 0.284,
+    "repetition_count": 3
+  }
+}
+```
+
+```
+hesitation_score   0~100 정수. 값이 클수록 많이 머뭇거렸다. 화면에 쓸 대표 지표
+speech_rate_cv     발화 속도의 변동 계수. 말이 빨라졌다 느려졌다 한 정도
+repetition_count   바로 이어서 같은 말을 반복한 횟수
+```
+
+**필러워드(「음」, 「어」)는 세지 않는다.** Whisper가 비유창성을 지우도록
+학습된 모델이라 안정적으로 잡히지 않는다. 대신 침묵 구간 · 발화 속도 변동 ·
+인접 반복 세 가지를 묶어 「머뭇거림」으로 나타낸다.
+
+`hesitation_score` 하나만 화면에 쓰면 되고, 나머지 둘은 원인 파악용이다.
+가중치는 잠정값이라 데이터가 쌓이면 바뀐다. **값만 바뀌고 키는 그대로다.**
+
+내용 축과 시선 축의 `metrics`는 아직 빈 객체다.
 
 ### evidence 객체
 

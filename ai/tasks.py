@@ -4,8 +4,14 @@
 LLM을 붙이면 세션 시작에 이력서 다운로드 + 질문 생성으로 10~30초가 걸리므로,
 동기로 처리하면 "요청하면 task_id를 즉시 반환한다"는 계약이 깨진다.
 
-Celery와 Redis는 쓰지 않는다. 작업이 전부 IO 대기(HTTP)라 스레드풀이면 충분하다.
-다만 세션과 마찬가지로 프로세스 메모리에만 있으므로 워커는 1개여야 한다.
+작업은 스레드풀에서 돈다. 전부 IO 대기(HTTP)라 이것으로 충분하다.
+
+**워커가 여러 개여도 된다.** 작업 객체 자체는 그것을 시작한 프로세스에만
+있지만, 상태가 바뀔 때마다 보관소(Redis)에 스냅샷을 쓴다. 다른 워커가
+폴링하면 그 스냅샷을 읽는다.
+
+작업 객체를 그대로 보관소에 넣지 않는 이유는 threading.Lock을 들고 있어
+직렬화가 안 되기 때문이다. 스냅샷은 응답 모델 그대로라 직렬화된다.
 """
 import logging
 import os
@@ -55,15 +61,37 @@ class BackgroundTask:
         self._final: Optional[BaseModel] = None
         self._completed = threading.Event()
 
+        # 상태를 비춰 둘 보관소. attach로 정한다.
+        self._store = None
+        self._key: Optional[str] = None
+
+    def attach(self, store, key: str) -> None:
+        """상태를 보관소에 비춘다. 워커가 여러 개일 때 폴링이 여기를 읽는다."""
+        self._store = store
+        self._key = key
+        self._publish()
+
+    def _publish(self) -> None:
+        """지금 상태를 보관소에 쓴다. 실패해도 작업은 계속한다."""
+        if self._store is None or self._key is None:
+            return
+        try:
+            self._store[self._key] = self.poll()
+        except Exception:
+            # 보관소가 잠깐 안 될 수 있다. 여기서 죽으면 면접이 끊긴다.
+            logger.warning("작업 상태를 보관소에 쓰지 못했습니다: %s", self._key)
+
     # ---------- 작업 쪽에서 부르는 것 ----------
     def set_stage(self, stage: str) -> None:
         """진행 단계를 알린다. 폴링하는 백엔드가 이 값을 본다."""
         with self._lock:
             self._stage = stage
+        self._publish()
 
     def _settle(self, payload: BaseModel) -> None:
         with self._lock:
             self._final = payload
+        self._publish()
         self._completed.set()
 
     # ---------- 폴링 쪽에서 부르는 것 ----------

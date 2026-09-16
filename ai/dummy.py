@@ -433,9 +433,23 @@ def register_task(pollable) -> str:
       BackgroundTask  실제로 백그라운드에서 도는 작업 (ai/tasks.py)
     """
     task_id = _new_task_id()
-    TASKS[task_id] = pollable
-    evict_oldest(TASKS, MAX_TASKS)
+    store_task(task_id, pollable)
     return task_id
+
+
+def store_task(task_id: str, pollable) -> None:
+    """정해진 task_id로 보관한다. 리포트는 멱등성 키 때문에 id를 먼저 만든다.
+
+    BackgroundTask는 threading.Lock을 들고 있어 직렬화가 안 된다. 그대로 넣으면
+    그것을 만든 워커에만 남아서, 다른 워커가 폴링하면 404가 난다.
+    attach를 쓰면 작업이 상태가 바뀔 때마다 스냅샷을 보관소에 쓴다.
+    """
+    attach = getattr(pollable, "attach", None)
+    if callable(attach):
+        attach(TASKS, task_id)
+    else:
+        TASKS[task_id] = pollable
+    evict_oldest(TASKS, MAX_TASKS)
 
 
 def save_task(result: Union[QuestionResult, SessionEndResult]) -> str:

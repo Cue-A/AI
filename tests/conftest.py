@@ -9,6 +9,11 @@ import os
 # AI_MODE=llm이 새어 들어오면 테스트가 진짜 API를 부를 수도 있다.
 os.environ["CUE_SKIP_DOTENV"] = "1"
 
+# 내용 채점은 문항마다 실제 API를 부른다. AI_MODE=llm으로 도는 테스트가
+# 여럿이라 막아두지 않으면 테스트를 돌릴 때마다 요금이 나간다.
+# 채점기를 시험하는 테스트는 report_dummy.CONTENT_SCORER에 가짜를 직접 꽂는다.
+os.environ["USE_CONTENT_SCORING"] = "0"
+
 import pytest
 
 os.environ.setdefault("CUEANDA_SHARED_SECRET", "test-secret")
