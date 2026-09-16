@@ -139,3 +139,86 @@ def test_카운터는_1부터_올라간다():
     counter = RedisCounter("t_seq")
     first = counter.next()
     assert counter.next() == first + 1
+
+
+# ---------------------------------------------------------------------------
+# 워커 여러 개 — 다른 워커가 폴링해도 보여야 한다
+#
+# 작업 객체는 threading.Lock을 들고 있어 직렬화가 안 된다. 그대로 보관소에
+# 넣으면 그것을 시작한 워커에만 남아서 다른 워커는 404를 받는다.
+# BackgroundTask.attach가 상태가 바뀔 때마다 스냅샷을 보관소에 쓴다.
+# ---------------------------------------------------------------------------
+
+
+def test_작업_객체는_직렬화되지_않는다():
+    """이 전제가 깨지면 아래 설계를 다시 볼 것."""
+    import pickle
+
+    from ai.tasks import BackgroundTask
+
+    task = BackgroundTask(stages=("a", "b"))
+    with pytest.raises(Exception):
+        pickle.dumps(task)
+
+
+def test_다른_워커가_진행_상황을_본다():
+    import time
+
+    from ai import dummy, tasks
+    from ai.schemas import SessionEndResult, TaskDoneResponse
+
+    dummy.TASKS.clear()
+    started = threading_event()
+
+    def work(t):
+        t.set_stage("generating")
+        started.wait(2)
+        return TaskDoneResponse(
+            status="done",
+            result=SessionEndResult(type="session_end", total_questions=9),
+        )
+
+    task = tasks.run(work, stages=("stt", "generating", "tts"))
+    task_id = dummy.register_task(task)
+
+    # 다른 워커 — 같은 보관소(Redis)를 보지만 로컬 폴백은 따로 가진다.
+    # 클라이언트를 공유하는 것이 "같은 Redis 서버에 붙은 다른 프로세스"에 해당한다.
+    other = RedisDict("tasks", client=dummy.TASKS._client)
+
+    for _ in range(50):
+        seen = other.get(task_id)
+        if seen is not None and getattr(seen, "stage", None) == "generating":
+            break
+        time.sleep(0.02)
+
+    assert seen is not None, "다른 워커에서 404가 났습니다"
+    assert seen.status == "processing"
+    assert seen.stage == "generating"
+
+    started.set()
+    task.wait(5)
+    time.sleep(0.05)
+
+    done = other.get(task_id)
+    assert done is not None, "끝난 뒤 다른 워커에서 404가 났습니다"
+    assert done.status == "done"
+
+
+def threading_event():
+    import threading
+
+    return threading.Event()
+
+
+def test_더미_작업도_다른_워커에서_보인다():
+    """DUMMY_POLL_TICKS로 만드는 PendingTask는 직렬화가 되므로 원래 됐다."""
+    from ai import dummy
+
+    dummy.TASKS.clear()
+    task_id = dummy.save_task(
+        __import__("ai.schemas", fromlist=["SessionEndResult"]).SessionEndResult(
+            type="session_end", total_questions=6
+        )
+    )
+    other = RedisDict("tasks", client=dummy.TASKS._client)
+    assert other.get(task_id) is not None
