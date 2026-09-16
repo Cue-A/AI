@@ -51,26 +51,43 @@ def score_content(question_text: str, answer_text: str) -> int:
     try:
         response = _client().messages.create(
             model=model(),
-            max_tokens=200,
+            # 사고 토큰이 이 한도 안에서 먼저 소모된다. 200이면 사고만 하다 잘려
+            # 점수가 안 나온다. effort를 low로 낮춰 사고를 짧게 하고 여유를 둔다.
+            max_tokens=1000,
             system=[{
                 "type": "text", 
                 "text": SYSTEM_PROMPT,
                 "cache_control": {"type": "ephemeral"} # 프롬프트 캐싱 적용
             }],
             messages=[{"role": "user", "content": user_message}],
-            temperature=0.0, # 채점 일관성을 위해 0으로 고정
+            # temperature는 쓰지 않는다. claude-sonnet-5에서 제거된 인자라
+            # 넣으면 호출이 400으로 실패한다. 일관성은 effort와 체크리스트로 잡는다.
+            output_config={"effort": "low"},
         )
         
-        text = response.content[0].text
+        text = _first_text(response)
         logger.info("채점 결과 원문:\n%s", text)
         
         score_match = re.search(r"점수:\s*(\d+)", text)
         if score_match:
-            return int(score_match.group(1))
-            
-        logger.warning("응답에서 점수를 파싱하지 못했습니다.")
-        return 0
-        
+            return max(0, min(100, int(score_match.group(1))))
+
+        # 여기서 0을 주면 파싱 실패가 "주제이탈"로 둔갑해 총점 상한 40이 걸린다.
+        # 채점을 못 한 것과 내용이 없는 것은 다르다.
+        raise ValueError("응답에서 점수를 찾지 못했습니다")
+
     except Exception as e:
         logger.error("내용 채점 API 호출 실패: %s", e)
         raise
+
+
+def _first_text(response) -> str:
+    """응답에서 텍스트 블록을 찾는다.
+
+    사고가 켜져 있으면 content[0]이 thinking 블록이라 .text가 없다.
+    """
+    for block in response.content:
+        text = getattr(block, "text", None)
+        if text:
+            return text
+    raise ValueError(f"응답에 텍스트 블록이 없습니다 (stop_reason={response.stop_reason})")

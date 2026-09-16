@@ -169,3 +169,52 @@ def test_채점기가_없으면_더미_트리거가_그대로_돈다(client, aut
 
     assert body["result"]["overall"]["gated"] is True
     assert body["result"]["axes"]["content"]["score"] < 30
+
+
+# ---------------------------------------------------------------------------
+# 요금 방어 — 내용 채점은 문항마다 실제 API를 부른다
+# ---------------------------------------------------------------------------
+
+
+def test_채점_스위치를_끄면_채점기가_없다(monkeypatch):
+    """USE_CONTENT_SCORING=0이면 AI_MODE가 llm이어도 부르지 않는다."""
+    monkeypatch.setenv("AI_MODE", "llm")
+    monkeypatch.setenv("USE_CONTENT_SCORING", "0")
+    monkeypatch.setattr(report_dummy, "CONTENT_SCORER", None)
+
+    assert report_dummy.content_scoring_enabled() is False
+    assert report_dummy._scorer() is None
+
+
+def test_채점_스위치는_호출_시점에_정해진다(monkeypatch):
+    """import 시점에 정하면 환경변수를 바꿔도 반영되지 않고,
+    테스트가 실제 API를 부를지가 import 순서에 좌우된다."""
+    monkeypatch.setattr(report_dummy, "CONTENT_SCORER", None)
+
+    monkeypatch.setenv("USE_CONTENT_SCORING", "0")
+    assert report_dummy.content_scoring_enabled() is False
+
+    monkeypatch.setenv("USE_CONTENT_SCORING", "1")
+    assert report_dummy.content_scoring_enabled() is True
+
+
+def test_스위치를_안_정하면_AI_MODE를_따른다(monkeypatch):
+    monkeypatch.delenv("USE_CONTENT_SCORING", raising=False)
+    monkeypatch.setattr(report_dummy, "CONTENT_SCORER", None)
+
+    monkeypatch.setenv("AI_MODE", "dummy")
+    assert report_dummy.content_scoring_enabled() is False
+
+    monkeypatch.setenv("AI_MODE", "llm")
+    assert report_dummy.content_scoring_enabled() is True
+
+
+def test_꽂아둔_채점기가_스위치보다_우선한다(monkeypatch):
+    """테스트가 가짜를 꽂으면 환경변수와 무관하게 그것이 쓰여야 한다."""
+    def fake(question_text, answer_text):
+        return 50
+
+    monkeypatch.setenv("USE_CONTENT_SCORING", "0")
+    monkeypatch.setattr(report_dummy, "CONTENT_SCORER", fake)
+
+    assert report_dummy._scorer() is fake
