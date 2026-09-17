@@ -68,6 +68,19 @@ RUN pip install --no-cache-dir -r requirements-full.txt
 COPY ai/ ./ai/
 COPY main.py ./
 
+# 실제 서비스에서만 필요한 것. 더미 이미지에는 넣지 않는다.
+#
+#   docs/    내용 채점 프롬프트를 여기서 읽는다 (ai/content_eval.py)
+#            빠지면 한 줄짜리 기본 프롬프트로 조용히 채점해서
+#            유창한 딴소리가 높은 점수를 받는다
+#   infra/   TTS가 S3 업로드를 여기서 가져온다 (ai/tts.py)
+#            빠지면 음성 합성이 조용히 꺼지고 텍스트만 나간다
+#
+# 둘 다 에러 없이 품질만 떨어지는 유형이라 로컬에서는 안 보인다.
+# tests/test_dockerfile.py가 이 두 줄을 잠근다.
+COPY docs/ ./docs/
+COPY infra/ ./infra/
+
 EXPOSE 8000
 
 # start_period가 90초인 것은 full 모드 때문이다. Whisper 로딩에 1분 가까이 걸려서
