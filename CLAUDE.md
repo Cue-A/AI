@@ -191,10 +191,21 @@ report_dummy.CONTENT_SCORER = scorer
 더 나은 설계가 떠올라도 계약서를 따르세요.
 이미 백엔드·프론트와 합의된 내용입니다.
 
-**4. Celery, Redis를 지금 붙이지 마세요.**
+**4. Redis · Celery는 C 담당입니다.**
 
-인프라는 다른 담당자가 맡습니다.
-세션 상태는 일단 메모리 딕셔너리에 보관하세요.
+처음에는 A가 붙이지 않기로 했고, 계획대로 C가 붙였습니다.
+
+```
+ai/redis_store.py    세션 · 작업 보관소. SESSIONS · TASKS · IDEMPOTENCY
+infra/celery_app.py  GPU 큐. 0번 Whisper, 1번 시선
+```
+
+**Redis는 필수가 아닙니다.** 패키지가 없거나 REDIS_URL이 비었거나
+서버에 못 붙으면 프로세스 메모리로 떨어집니다. 그때는 워커가 1개여야 합니다.
+백엔드가 로컬에서 더미 서버만 띄울 때는 없어도 됩니다.
+
+진행 중인 작업(BackgroundTask)은 직렬화가 안 돼서 상태 스냅샷을 대신
+보관소에 씁니다. 그래서 워커가 여러 개여도 다른 워커가 폴링할 수 있습니다.
 
 ## session_plan.py 사용법
 
