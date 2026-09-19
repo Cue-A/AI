@@ -9,6 +9,7 @@ import hashlib
 import itertools
 import logging
 import os
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -119,6 +120,36 @@ def _scorer():
     from ai.content_eval import score_content
 
     return score_content
+
+
+# 말하기 점수 변환식을 꽂는 자리. B 담당.
+#
+#   def scorer(metrics: dict) -> int:   # 0~100, 클수록 좋다
+#
+# metrics는 문항 하나의 hesitation_score · speech_rate_cv · repetition_count다.
+# None이면 말하기 점수는 해시 더미로 가고, metrics만 실제 값으로 채워진다.
+SPEECH_SCORER = None
+
+
+def _gaze_scorer():
+    """C의 시선 점수 변환식. 실제 분석 결과가 있을 때만 불린다."""
+    from infra.gaze_analysis.gaze_score import gaze_score
+
+    return gaze_score
+
+
+@dataclass
+class Measured:
+    """실제로 측정한 값. 더미 모드에서는 만들지 않는다.
+
+    heard        question_id → 전사 결과(AnswerText). 되묻기 답변도 들어 있다
+    gaze         question_id → C의 시선 분석 결과. 영상이 없는 문항은 빠진다
+    gaze_failed  한 문항이라도 분석이 실패했는가 → GAZE_FAILED
+    """
+
+    heard: dict = field(default_factory=dict)
+    gaze: dict = field(default_factory=dict)
+    gaze_failed: bool = False
 
 # 최근 3회차 변화가 이 값 미만이면 정체로 본다.
 STALLED_THRESHOLD = 3
@@ -290,25 +321,114 @@ def _evidence(session_id: str, axis: str, rows: list[ReportAnswer]) -> list[Evid
 def _axis_result(
     session_id: str, axis: str, status: str, detail: Optional[str],
     rows: list[ReportAnswer], per_question: dict[str, dict[str, int]],
+    measured: Optional[Measured] = None,
 ) -> AxisResult:
     if status == "failed":
         return AxisResult(status="failed", error_code=detail, evidence=[])
     if status == "skipped":
         return AxisResult(status="skipped", reason=detail, evidence=[])
 
-    scores = [per_question[r.question_id][axis] for r in rows]
+    # 시선은 영상이 있는 문항만 평균한다. 카메라를 중간에 끈 문항까지
+    # 더미 점수로 섞으면 실제 측정값이 흐려진다.
+    counted = rows
+    if axis == "gaze" and measured and measured.gaze:
+        counted = [r for r in rows if r.question_id in measured.gaze]
+
+    scores = [per_question[r.question_id][axis] for r in counted]
     score = round(sum(scores) / len(scores)) if scores else 0
     return AxisResult(
         status="ok",
         score=score,
         display=display_of(score),
-        metrics={},  # 축별 세부 지표는 아직 확정되지 않았다. 빈 객체가 정상이다
-        evidence=_evidence(session_id, axis, rows),
+        metrics=_metrics(axis, rows, measured),
+        evidence=_real_evidence(axis, rows, measured)
+        if _is_measured(axis, rows, measured)
+        else _evidence(session_id, axis, rows),
     )
 
 
+def _fluency_of(row, measured: Optional[Measured]) -> Optional[dict]:
+    if not measured:
+        return None
+    heard = measured.heard.get(row.question_id)
+    return getattr(heard, "fluency", None)
+
+
+def _is_measured(axis: str, rows, measured: Optional[Measured]) -> bool:
+    """이 축이 실제 측정값으로 채워졌는가. 아니면 더미 근거 문장을 쓴다."""
+    if not measured:
+        return False
+    if axis == "speech":
+        return any(_fluency_of(r, measured) for r in rows)
+    if axis == "gaze":
+        return bool(measured.gaze)
+    return False
+
+
+def _metrics(axis: str, rows, measured: Optional[Measured]) -> dict:
+    """축별 세부 지표. 계약서에 키가 확정된 축만 채운다.
+
+    speech          확정. 문항 평균(hesitation · cv)과 합계(반복)
+    content · gaze  키가 아직 합의되지 않았다. 빈 객체가 정상이다
+    """
+    if axis != "speech":
+        return {}
+    found = [f for f in (_fluency_of(r, measured) for r in rows) if f]
+    if not found:
+        return {}
+    n = len(found)
+    return {
+        "hesitation_score": round(sum(f["hesitation_score"] for f in found) / n),
+        "speech_rate_cv": round(sum(f["speech_rate_cv"] for f in found) / n, 3),
+        "repetition_count": sum(f["repetition_count"] for f in found),
+    }
+
+
+def _real_evidence(axis: str, rows, measured: Measured) -> list[Evidence]:
+    """실제 측정에서 나온 근거.
+
+    시선은 C가 회피 구간을 Evidence 모양으로 준다. 말하기는 아직 구간 단위
+    근거를 만들지 않으므로 빈 배열이다. 더미 문장을 붙이면 실제 지표와
+    어긋난 말을 하게 된다.
+    """
+    if axis != "gaze":
+        return []
+    out = []
+    for r in rows:
+        for e in measured.gaze.get(r.question_id, {}).get("evidence", []):
+            out.append(Evidence(**{**e, "question_id": r.question_id}))
+    return out
+
+
+def _speech_score(row, measured: Optional[Measured]) -> Optional[int]:
+    fluency = _fluency_of(row, measured)
+    if SPEECH_SCORER is None or not fluency:
+        return None
+    try:
+        return max(0, min(100, int(SPEECH_SCORER(fluency))))
+    except Exception:
+        logger.warning("말하기 점수 변환에 실패해 더미 점수를 씁니다: %s", row.question_id)
+        return None
+
+
+def _gaze_score(row, measured: Optional[Measured]) -> Optional[int]:
+    if not measured:
+        return None
+    result = measured.gaze.get(row.question_id)
+    if not result:
+        return None
+    return max(0, min(100, int(_gaze_scorer()(result))))
+
+
+def _answer_text(row, transcripts: dict[str, str], reasks=()) -> str:
+    """채점할 답변 텍스트. 되묻기 답변은 원 답변 뒤에 이어 붙인다."""
+    parts = [transcripts.get(row.question_id, "")]
+    parts += [transcripts.get(r.question_id, "") for r in reasks]
+    return " ".join(p.strip() for p in parts if p and p.strip())
+
+
 def _content_score(
-    session_id: str, row, transcripts: Optional[dict[str, str]]
+    session_id: str, row, transcripts: Optional[dict[str, str]], reasks=()
 ) -> Optional[int]:
     """실제 채점 결과. 채점기가 없거나 전사가 없으면 None.
 
@@ -318,7 +438,7 @@ def _content_score(
     if scorer is None or not transcripts:
         return None
 
-    text = transcripts.get(row.question_id, "").strip()
+    text = _answer_text(row, transcripts, reasks)
     if not text:
         return None
 
@@ -332,14 +452,50 @@ def _content_score(
     return max(0, min(100, score))
 
 
+def _statuses(answers, measured: Optional[Measured]):
+    """더미 트리거로 정한 상태에 실제 분석 실패를 덧씌운다."""
+    statuses = axis_statuses(answers)
+    if measured and measured.gaze_failed and statuses["gaze"][0] == "ok":
+        statuses["gaze"] = ("failed", "GAZE_FAILED")
+    return statuses
+
+
+def _measured_scores(session_id: str, row, measured: Optional[Measured]) -> dict[str, int]:
+    """문항 하나의 축 점수. 실제 측정값이 있는 축은 그것으로, 없으면 해시로."""
+    scores = {a: score_for(session_id, row.question_id, a) for a in AXES}
+    speech = _speech_score(row, measured)
+    if speech is not None:
+        scores["speech"] = speech
+    gaze = _gaze_score(row, measured)
+    if gaze is not None:
+        scores["gaze"] = gaze
+    return scores
+
+
+def _length(row, measured: Optional[Measured]) -> tuple[int, int]:
+    heard = measured.heard.get(row.question_id) if measured else None
+    if heard is not None:
+        return heard.duration_sec, heard.word_count
+    return answer_length(row.audio_url)
+
+
+def _transcript(row, transcripts: Optional[dict[str, str]], reasks=()) -> str:
+    if transcripts:
+        text = _answer_text(row, transcripts, reasks)
+        if text:
+            return text
+    return f"(더미 전사) {row.text} 에 대한 답변입니다."
+
+
 def build_report(
     session_id: str,
     req: ReportCreateRequest,
     transcripts: Optional[dict[str, str]] = None,
+    measured: Optional[Measured] = None,
 ) -> ReportResult:
     rows = scored_answers(req.answers)
     extra = reasks_by_target(req.answers)
-    statuses = axis_statuses(req.answers)
+    statuses = _statuses(req.answers, measured)
 
     usable = [a for a in AXES if statuses[a][0] == "ok"]
     weights = renormalized_weights(usable)
@@ -351,8 +507,8 @@ def build_report(
     partial_offtopic = not offtopic and is_partial_offtopic(req.answers)
     per_question: dict[str, dict[str, int]] = {}
     for r in rows:
-        scores = {a: score_for(session_id, r.question_id, a) for a in AXES}
-        real = _content_score(session_id, r, transcripts)
+        scores = _measured_scores(session_id, r, measured)
+        real = _content_score(session_id, r, transcripts, extra.get(r.question_id, []))
         if real is not None:
             # 실제 채점이 붙어 있으면 더미 트리거보다 우선한다
             scores["content"] = real
@@ -367,10 +523,10 @@ def build_report(
         picked = {a: per_question[r.question_id][a] for a in usable}
         q_score = round(sum(picked[a] * weights[a] for a in usable))
 
-        duration, words = answer_length(r.audio_url)
+        duration, words = _length(r, measured)
         for reask in extra.get(r.question_id, []):
             # 되묻기 답변은 원 질문의 답변에 이어 붙여 하나로 채점한다
-            d, w = answer_length(reask.audio_url)
+            d, w = _length(reask, measured)
             duration += d
             words += w
 
@@ -384,7 +540,7 @@ def build_report(
             score=q_score,
             display=display_of(q_score),
             axes=AxisScores(**{a: picked.get(a) for a in AXES}),
-            transcript=f"(더미 전사) {r.text} 에 대한 답변입니다.",
+            transcript=_transcript(r, transcripts, extra.get(r.question_id, [])),
             duration_sec=float(duration),
             word_count=words,
             was_timeout=r.is_timeout,
@@ -392,7 +548,9 @@ def build_report(
         ))
 
     axes = Axes(**{
-        a: _axis_result(session_id, a, statuses[a][0], statuses[a][1], rows, per_question)
+        a: _axis_result(
+            session_id, a, statuses[a][0], statuses[a][1], rows, per_question, measured
+        )
         for a in AXES
     })
 
@@ -459,16 +617,16 @@ def build_retry(
     session_id: str,
     req: ReportRetryRequest,
     transcripts: Optional[dict[str, str]] = None,
+    measured: Optional[Measured] = None,
 ) -> ReportRetryResult:
     """요청한 축만 다시 계산해 돌려준다. 백엔드가 기존 리포트에 병합한다."""
     rows = scored_answers(req.answers)
-    statuses = axis_statuses(req.answers)
-    per_question = {
-        r.question_id: {a: score_for(session_id, r.question_id, a) for a in AXES}
-        for r in rows
-    }
+    statuses = _statuses(req.answers, measured)
+    per_question = {r.question_id: _measured_scores(session_id, r, measured) for r in rows}
     picked = {
-        a: _axis_result(session_id, a, statuses[a][0], statuses[a][1], rows, per_question)
+        a: _axis_result(
+            session_id, a, statuses[a][0], statuses[a][1], rows, per_question, measured
+        )
         for a in req.axes
     }
     return ReportRetryResult(

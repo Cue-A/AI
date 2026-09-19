@@ -17,7 +17,7 @@ STT를 쓰지 않는 배포에서는 이 모듈을 불러도 아무 일이 없�
 import logging
 import os
 import tempfile
-from typing import NamedTuple
+from typing import NamedTuple, Optional
 
 import httpx2
 
@@ -61,12 +61,19 @@ class AnswerText(NamedTuple):
     """답변 하나에서 뽑아낸 값.
 
     duration_sec와 word_count는 session_plan의 길이 게이트가 쓰고,
-    text는 꼬리질문 생성이 쓴다.
+    text는 꼬리질문 생성이 쓴다. fluency는 리포트의 말하기 축이 쓴다.
     """
 
     duration_sec: int
     word_count: int
     text: str
+    # B의 발화 지표. 리포트 계약의 speech.metrics 키와 같다.
+    # 키가 하나라도 빠져 있으면 None이다. 그러면 말하기 축은 더미 점수로 간다.
+    fluency: Optional[dict] = None
+
+
+# 리포트 계약 「말하기 축 metrics — 확정」
+FLUENCY_KEYS = ("hesitation_score", "speech_rate_cv", "repetition_count")
 
 
 def _download(audio_url: str) -> bytes:
@@ -150,4 +157,19 @@ def _to_answer_text(result: dict) -> AnswerText:
         duration_sec=int(round(duration)),
         word_count=word_count,
         text=(result.get("text") or "").strip(),
+        fluency=_fluency(result),
     )
+
+
+def _fluency(result: dict) -> Optional[dict]:
+    """발화 지표만 골라낸다. 없으면 None. 전사 자체는 실패로 보지 않는다."""
+    if not all(k in result for k in FLUENCY_KEYS):
+        return None
+    try:
+        return {
+            "hesitation_score": float(result["hesitation_score"]),
+            "speech_rate_cv": float(result["speech_rate_cv"]),
+            "repetition_count": int(result["repetition_count"]),
+        }
+    except (TypeError, ValueError):
+        return None

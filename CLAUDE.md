@@ -49,6 +49,7 @@ ai/
   resume.py           이력서 다운로드 (PDF · Word · 텍스트)
   answers.py          답변 오디오 → 전사 · 발화 지표 (STT 이음매)
   voice.py            질문 텍스트 → 음성 URL (TTS 이음매)
+  gaze.py             답변 영상 → 시선 지표 (C의 L2CS 파이프라인 이음매)
   stt.py              Whisper 전사와 발화 · 마무리 지표 (B 담당)
   tasks.py            진짜 백그라운드 실행 (스레드풀)
   pipeline.py         세션 시작 · 답변 처리 흐름 — 더미/llm 분기
@@ -76,6 +77,7 @@ tests/
   test_voice.py       음성 합성 이음매 — 실패해도 세션이 이어지는지
   test_store.py       세션 · 작업 보관소. Redis 없어도 뜨는지, 워커 여러 개
   test_end_to_end.py  자소서 → 면접 → 리포트 한 바퀴
+  test_measured.py    말하기 지표 · 시선 점수가 리포트에 실제로 들어가는지
 scripts/
   compare_models.py   같은 이력서로 모델을 바꿔 돌려 품질 비교
 Dockerfile            base / dummy / full 멀티스테이지
@@ -139,8 +141,21 @@ def synthesize(text: str, persona: str) -> str:
 
 ```
 verdict 2단계    LLM 판정. 일관성 검증이 끝나야 켠다. 지금은 항상 None
-내용 채점        report_dummy의 점수가 해시다. 초안은 docs/내용채점_프롬프트_초안.md
+말하기 점수      지표(metrics)는 실제 값. 점수 변환식은 B가 report_dummy.SPEECH_SCORER에 꽂는다
 ```
+
+### 리포트 축별로 실제 값이 어디서 오는가
+
+```
+content   ai/content_eval.py (D)                USE_CONTENT_SCORING. 문항당 약 2원
+speech    전사 때 B가 계산한 발화 지표           metrics는 실제, 점수는 SPEECH_SCORER 전까지 해시
+gaze      infra/gaze_analysis (C) + gaze_score  USE_GAZE=1 + GAZE_WEIGHTS. GPU 필요
+```
+
+전사 결과(`AnswerText`)는 텍스트만이 아니라 발화 지표(`fluency`)까지 들고
+리포트로 넘어온다. 되묻기 답변은 원 답변 뒤에 이어 붙여 채점하고 전사에도 그렇게 보인다.
+시선 분석이 한 문항이라도 실패하면 gaze만 `GAZE_FAILED`인 부분 리포트가 나간다.
+gaze의 `metrics`는 계약서에 키가 합의되지 않아 빈 객체로 둔다.
 
 ### 내용 채점을 붙이는 자리
 
@@ -191,10 +206,21 @@ report_dummy.CONTENT_SCORER = scorer
 더 나은 설계가 떠올라도 계약서를 따르세요.
 이미 백엔드·프론트와 합의된 내용입니다.
 
-**4. Celery, Redis를 지금 붙이지 마세요.**
+**4. Redis · Celery는 C 담당입니다.**
 
-인프라는 다른 담당자가 맡습니다.
-세션 상태는 일단 메모리 딕셔너리에 보관하세요.
+처음에는 A가 붙이지 않기로 했고, 계획대로 C가 붙였습니다.
+
+```
+ai/redis_store.py    세션 · 작업 보관소. SESSIONS · TASKS · IDEMPOTENCY
+infra/celery_app.py  GPU 큐. 0번 Whisper, 1번 시선
+```
+
+**Redis는 필수가 아닙니다.** 패키지가 없거나 REDIS_URL이 비었거나
+서버에 못 붙으면 프로세스 메모리로 떨어집니다. 그때는 워커가 1개여야 합니다.
+백엔드가 로컬에서 더미 서버만 띄울 때는 없어도 됩니다.
+
+진행 중인 작업(BackgroundTask)은 직렬화가 안 돼서 상태 스냅샷을 대신
+보관소에 씁니다. 그래서 워커가 여러 개여도 다른 워커가 폴링할 수 있습니다.
 
 ## session_plan.py 사용법
 
