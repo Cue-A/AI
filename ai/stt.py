@@ -32,6 +32,11 @@ COMPUTE_TYPE = os.environ.get("STT_COMPUTE_TYPE", "float16")
 SILENCE_THRESHOLD = 1.0  # 초. 이보다 길게 비면 "의미 있는 침묵"으로 판단.
 ENDING_PATTERNS = ["습니다", "니다", "겠습니다", "합니다", "됩니다", "죠", "네요", "어요", "아요"]
 
+# 말하기 축 점수(speech_score) 변환에서 마무리 지표에 매기는 감점.
+# 잠정치 — 3명 데이터로 임시로 잡았다. 실제 답변이 쌓이면 앵커 답변 세트로 재조정 필요.
+SPEECH_TRAILING_OFF_PENALTY = 8   # 종결어미로 끝맺지 못함
+SPEECH_SILENT_ENDING_PENALTY = 7  # 거기에 더해 끝에 긴 침묵까지 있음 (trailing_off일 때만 발생)
+
 # 나중에 C의 Redis 인프라가 준비되면 이 경로 대신 Redis 클라이언트로 교체.
 # 배포 환경마다 다를 수 있어서 환경변수로 오버라이드 가능하게 해둠.
 CACHE_DIR = os.environ.get("STT_CACHE_DIR", "./stt_cache")
@@ -108,11 +113,19 @@ def compute_speech_metrics(segments, silence_threshold: float = SILENCE_THRESHOL
 #
 # 알려진 한계: is_concluded는 종결어미(습니다/네요 등) 존재 여부만 본다.
 # 내용이 부실해도 습관적으로 "감사합니다"로 끝내면 True가 나올 수 있다.
+#
+# 수정 이력: Whisper가 문장 끝에 마침표(.)를 붙이느냐 마느냐가 모델·발화마다
+# 들쭉날쭉해서, endswith 비교 전에 트레일링 문장부호를 제거하도록 고쳤다.
+# 안 그러면 내용은 똑같은데 마침표 유무만으로 is_concluded가 뒤집히고, 그게
+# speech_score의 마무리 감점(-15점)까지 좌우해버린다 — tiny/medium/large-v3
+# 세 모델 비교 중 large-v3에서 실제로 이 문제가 점수를 92점까지 튀게 만든 걸 확인함.
 # ---------------------------------------------------------------------------
 
 def compute_ending_metrics(full_text: str, segments, audio_duration: float) -> dict:
     text_stripped = full_text.strip()
-    is_concluded = bool(any(text_stripped.endswith(p) for p in ENDING_PATTERNS))
+    # Whisper가 붙이거나 안 붙이거나 하는 문장부호는 종결 판정에서 무시한다.
+    text_for_ending_check = text_stripped.rstrip(".!?~…‥ ")
+    is_concluded = bool(any(text_for_ending_check.endswith(p) for p in ENDING_PATTERNS))
 
     all_words = [w for seg in segments for w in seg.words]
     last_word_end = float(all_words[-1].end) if all_words else 0.0
@@ -225,6 +238,44 @@ def compute_fluency_metrics(segments, silence_segments: list, speech_duration_se
         "repetition_count": repetition_count,
         "hesitation_score": hesitation_score,
     }
+
+
+# ---------------------------------------------------------------------------
+# 3-3. 말하기 점수 변환식 — process_answer() 결과를 리포트의 speech 축 점수(0~100)로
+#
+# 설계: hesitation_score(0~100, 높을수록 머뭇거림 심함)를 뒤집은 값을 출발점으로 삼고,
+# 마무리 지표(trailing_off · silent_ending)에서 감점하는 방식.
+#
+#   100 - hesitation_score               출발점
+#   - trailing_off면 감점                종결어미 없이 답변이 흐지부지 끝남
+#   - silent_ending이면 추가 감점         끝맺지 못한 데다 뒤에 긴 침묵까지 있음
+#
+# is_timeout=True(시간 초과로 답변이 강제 종료된 경우)는 마무리 감점에서 제외한다.
+# 답변이 안 끝난 게 화자 탓이 아니라 시간이 끝난 탓이기 때문이다. 이 경우
+# hesitation_score 기반 점수만 그대로 쓴다.
+#
+# 알려진 한계: 감점 폭(8/7)은 3명 데이터로 임시로 잡은 값이라 실제 서비스
+# 데이터가 쌓이면 앵커 답변 세트로 재조정이 필요하다.
+# ---------------------------------------------------------------------------
+
+def speech_score(metrics: dict) -> int:
+    """process_answer()가 반환한 dict를 받아 speech 축 점수(0~100)로 변환한다.
+
+    입력은 process_answer()의 반환 dict를 그대로 넘기면 된다
+    (hesitation_score · trailing_off · silent_ending · is_timeout 키를 읽는다).
+    다른 키가 없거나 dict 형태만 맞으면 되므로, 캐시에서 꺼낸 과거 결과를
+    그대로 넘겨도 동작한다.
+    """
+    hesitation = float(metrics.get("hesitation_score", 0.0))
+    score = 100.0 - hesitation
+
+    if not metrics.get("is_timeout", False):
+        if metrics.get("trailing_off"):
+            score -= SPEECH_TRAILING_OFF_PENALTY
+        if metrics.get("silent_ending"):
+            score -= SPEECH_SILENT_ENDING_PENALTY
+
+    return max(0, min(100, round(score)))
 
 
 # ---------------------------------------------------------------------------
