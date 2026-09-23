@@ -57,6 +57,18 @@ class SttError(Exception):
     """전사에 실패했다. 계약서의 STT_FAILED로 옮겨진다."""
 
 
+class MediaFetchError(SttError):
+    """답변 파일을 내려받지 못했다.
+
+    리포트에서는 MEDIA_FETCH_FAILED로 따로 나간다. 원인이 대개 presigned URL
+    만료라서, 백엔드가 새 URL로 한 번 다시 요청하면 풀린다. STT_FAILED로 뭉뚱그리면
+    백엔드는 오디오 문제로 보고 재시도하지 않는다. (리포트 계약 9장)
+
+    질문 생성 계약에는 이 코드가 없어서, 답변 처리 중에는 SttError로 잡혀
+    STT_FAILED로 나간다. 그래서 SttError를 상속한다.
+    """
+
+
 class AnswerText(NamedTuple):
     """답변 하나에서 뽑아낸 값.
 
@@ -93,12 +105,12 @@ def _download(audio_url: str) -> bytes:
             raw = response.content
     except httpx2.HTTPStatusError as e:
         # presigned URL 만료가 가장 흔하다
-        raise SttError(
+        raise MediaFetchError(
             f"답변 음성을 내려받지 못했습니다 (HTTP {e.response.status_code}). "
             "presigned URL이 만료되었을 수 있습니다"
         ) from e
     except httpx2.HTTPError as e:
-        raise SttError(f"답변 음성을 내려받지 못했습니다: {type(e).__name__}") from e
+        raise MediaFetchError(f"답변 음성을 내려받지 못했습니다: {type(e).__name__}") from e
 
     if not raw:
         raise SttError("답변 음성이 비어 있습니다")

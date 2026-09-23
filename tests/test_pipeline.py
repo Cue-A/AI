@@ -424,6 +424,25 @@ def test_전사가_실패하면_STT_FAILED가_나간다(client, auth, llm_mode, 
     assert "result" not in done
 
 
+def test_답변_처리에서는_다운로드_실패도_STT_FAILED다(client, auth, llm_mode, fake_llm):
+    """질문 생성 계약에는 MEDIA_FETCH_FAILED가 없다. 리포트에만 있다.
+    계약에 없는 코드를 내보내면 백엔드 분기가 깨진다."""
+    from ai.answers import MediaFetchError
+
+    sid, first = _first_question(client, auth)
+    fake_llm.transcribe.side_effect = MediaFetchError("HTTP 403")
+
+    res = client.post(f"/ai/sessions/{sid}/answers", headers=auth, json={
+        "question_id": first["question_id"],
+        "audio_url": "https://s3.../ans.webm",
+        "video_url": None,
+        "is_timeout": False,
+    })
+    done, _ = poll_until_done(client, auth, res.json()["task_id"])
+
+    assert done["error_code"] == "STT_FAILED"
+
+
 def test_꼬리질문_생성이_실패해도_세션은_이어진다(client, auth, llm_mode, fake_llm):
     """고정 문장이 나가는 편이 면접이 끊기는 것보다 낫다."""
     fake_llm.followup.side_effect = LlmError("생성 실패")
