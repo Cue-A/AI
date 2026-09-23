@@ -141,16 +141,19 @@ def synthesize(text: str, persona: str) -> str:
 
 ```
 verdict 2단계    LLM 판정. 일관성 검증이 끝나야 켠다. 지금은 항상 None
-말하기 점수      지표(metrics)는 실제 값. 점수 변환식은 B가 report_dummy.SPEECH_SCORER에 꽂는다
+배포            아직 안 했다. 백엔드는 MockAiClient로 자기 흐름만 확인한 상태다
 ```
 
 ### 리포트 축별로 실제 값이 어디서 오는가
 
 ```
 content   ai/content_eval.py (D)                USE_CONTENT_SCORING. 문항당 약 2원
-speech    전사 때 B가 계산한 발화 지표           metrics는 실제, 점수는 SPEECH_SCORER 전까지 해시
+speech    ai/stt.py의 speech_score (B)          전사가 돌면 자동. 요금 없음
 gaze      infra/gaze_analysis (C) + gaze_score  USE_GAZE=1 + GAZE_WEIGHTS. GPU 필요
 ```
+
+축 가중치는 content 0.5 / speech 0.25 / gaze 0.25로 확정됐다(2026-09-23).
+영상 9개의 세 축 점수를 사람 순위와 비교해 정했다.
 
 전사 결과(`AnswerText`)는 텍스트만이 아니라 발화 지표(`fluency`)까지 들고
 리포트로 넘어온다. 되묻기 답변은 원 답변 뒤에 이어 붙여 채점하고 전사에도 그렇게 보인다.

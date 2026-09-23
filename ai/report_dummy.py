@@ -122,13 +122,24 @@ def _scorer():
     return score_content
 
 
-# 말하기 점수 변환식을 꽂는 자리. B 담당.
+# 말하기 점수 변환식을 바꿔 끼우는 자리. 테스트가 여기에 가짜를 넣는다.
+# None이면 아래 _speech_scorer()가 B의 stt.speech_score를 쓴다.
 #
 #   def scorer(metrics: dict) -> int:   # 0~100, 클수록 좋다
-#
-# metrics는 문항 하나의 hesitation_score · speech_rate_cv · repetition_count다.
-# None이면 말하기 점수는 해시 더미로 가고, metrics만 실제 값으로 채워진다.
 SPEECH_SCORER = None
+
+
+def _speech_scorer():
+    """지금 쓸 말하기 점수 변환식.
+
+    실제 발화 지표가 있을 때만 불린다. 그때는 전사가 돌았다는 뜻이라
+    ai/stt.py를 불러도 안전하다. (faster-whisper import는 그 안에서 또 미뤄진다)
+    """
+    if SPEECH_SCORER is not None:
+        return SPEECH_SCORER
+    from ai.stt import speech_score
+
+    return speech_score
 
 
 def _gaze_scorer():
@@ -402,10 +413,10 @@ def _real_evidence(axis: str, rows, measured: Measured) -> list[Evidence]:
 
 def _speech_score(row, measured: Optional[Measured]) -> Optional[int]:
     fluency = _fluency_of(row, measured)
-    if SPEECH_SCORER is None or not fluency:
+    if not fluency:
         return None
     try:
-        return max(0, min(100, int(SPEECH_SCORER(fluency))))
+        return max(0, min(100, int(_speech_scorer()(fluency))))
     except Exception:
         logger.warning("말하기 점수 변환에 실패해 더미 점수를 씁니다: %s", row.question_id)
         return None

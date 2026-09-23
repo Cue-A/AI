@@ -67,13 +67,20 @@ class AnswerText(NamedTuple):
     duration_sec: int
     word_count: int
     text: str
-    # B의 발화 지표. 리포트 계약의 speech.metrics 키와 같다.
-    # 키가 하나라도 빠져 있으면 None이다. 그러면 말하기 축은 더미 점수로 간다.
+    # B의 발화 지표. 계약서에 확정된 세 키와, 점수 변환식이 함께 보는 값들이다.
+    # 확정 세 키 중 하나라도 빠져 있으면 None이고, 그러면 말하기 축은 더미 점수로 간다.
     fluency: Optional[dict] = None
 
 
-# 리포트 계약 「말하기 축 metrics — 확정」
+# 리포트 계약 「말하기 축 metrics — 확정」. 화면에 나가는 세 키다.
 FLUENCY_KEYS = ("hesitation_score", "speech_rate_cv", "repetition_count")
+
+# 점수 변환식(stt.speech_score)이 추가로 보는 값. 없으면 그냥 감점이 없는 것으로 본다.
+#
+#   trailing_off    말끝을 흐렸다
+#   silent_ending   말없이 끝났다
+#   is_timeout      시간이 끊었다 — 마무리 감점을 하지 않는 근거가 된다
+ENDING_KEYS = ("trailing_off", "silent_ending", "is_timeout")
 
 
 def _download(audio_url: str) -> bytes:
@@ -162,14 +169,23 @@ def _to_answer_text(result: dict) -> AnswerText:
 
 
 def _fluency(result: dict) -> Optional[dict]:
-    """발화 지표만 골라낸다. 없으면 None. 전사 자체는 실패로 보지 않는다."""
+    """발화 지표만 골라낸다. 없으면 None. 전사 자체는 실패로 보지 않는다.
+
+    마무리 지표도 같이 담는다. 점수 변환식이 그것까지 보기 때문이다.
+    담지 않으면 말끝을 흐린 답변과 또박또박 끝낸 답변이 같은 점수를 받는다.
+    """
     if not all(k in result for k in FLUENCY_KEYS):
         return None
     try:
-        return {
+        out = {
             "hesitation_score": float(result["hesitation_score"]),
             "speech_rate_cv": float(result["speech_rate_cv"]),
             "repetition_count": int(result["repetition_count"]),
         }
     except (TypeError, ValueError):
         return None
+
+    for key in ENDING_KEYS:
+        if key in result:
+            out[key] = bool(result[key])
+    return out
