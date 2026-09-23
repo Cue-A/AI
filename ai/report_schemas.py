@@ -34,7 +34,7 @@ ReportStage = Literal[
 ]
 
 # 정상 가중치. 축이 실패하면 남은 축에 비례 배분한다. (계약서 6장)
-AXIS_WEIGHTS: dict[str, float] = {"content": 0.5, "speech": 0.3, "gaze": 0.2}
+AXIS_WEIGHTS: dict[str, float] = {"content": 0.5, "speech": 0.25, "gaze": 0.25}
 
 
 def display_of(score: int) -> int:
