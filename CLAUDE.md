@@ -84,6 +84,7 @@ tests/
   test_measured.py    말하기 지표 · 시선 점수가 리포트에 실제로 들어가는지
   test_tts_path.py    질문 음성을 백엔드가 정한 S3 경로에 올리는지
   test_report_writer.py  리포트 글 칸 — 지어낸 발췌를 버리는지, 실패해도 리포트가 나가는지
+  test_requirements.py  코드가 쓰는 외부 패키지가 requirements에 다 있는지
 scripts/
   compare_models.py   같은 이력서로 모델을 바꿔 돌려 품질 비교
 Dockerfile            base / dummy / full 멀티스테이지
