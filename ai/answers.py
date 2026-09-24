@@ -82,6 +82,9 @@ class AnswerText(NamedTuple):
     # B의 발화 지표. 계약서에 확정된 세 키와, 점수 변환식이 함께 보는 값들이다.
     # 확정 세 키 중 하나라도 빠져 있으면 None이고, 그러면 말하기 축은 더미 점수로 간다.
     fluency: Optional[dict] = None
+    # 단어별 시간 [{text, start, end}]. 리포트 근거의 t_start · t_end를 정확히 짚는 데 쓴다.
+    # 예전 전사 캐시에는 없다. 없으면 답변 전체 구간으로 표시한다.
+    words: Optional[list] = None
 
 
 # 리포트 계약 「말하기 축 metrics — 확정」. 화면에 나가는 세 키다.
@@ -177,7 +180,23 @@ def _to_answer_text(result: dict) -> AnswerText:
         word_count=word_count,
         text=(result.get("text") or "").strip(),
         fluency=_fluency(result),
+        words=_words(result),
     )
+
+
+def _words(result: dict) -> Optional[list]:
+    """단어별 시간만 골라낸다. 모양이 이상하면 None. 전사 자체는 실패로 보지 않는다."""
+    words = result.get("words")
+    if not isinstance(words, list) or not words:
+        return None
+    out = []
+    for w in words:
+        try:
+            out.append({"text": str(w["text"]), "start": float(w["start"]),
+                        "end": float(w["end"])})
+        except (KeyError, TypeError, ValueError):
+            return None
+    return out
 
 
 def _fluency(result: dict) -> Optional[dict]:

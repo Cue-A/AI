@@ -121,6 +121,16 @@ def _scorer():
     return score_content
 
 
+# 리포트 코멘트(내용 근거 · 개선 답변 · 기업 코멘트)를 만드는 Claude 호출을
+# 바꿔 끼우는 자리. 테스트가 여기에 가짜를 넣는다. None이면 실제로 부른다.
+#
+#   def call(system: str, user: str) -> report_writer._Written
+#
+# 내용 채점과 같은 스위치(USE_CONTENT_SCORING)를 따른다. 채점이 꺼져 있으면
+# 코멘트도 만들지 않고 더미 문장을 쓴다. 둘 다 리포트에서 요금이 나가는 부분이다.
+WRITER_CALL = None
+
+
 # 말하기 점수 변환식을 바꿔 끼우는 자리. 테스트가 여기에 가짜를 넣는다.
 # None이면 아래 _speech_scorer()가 B의 stt.speech_score를 쓴다.
 #
@@ -632,6 +642,28 @@ def build_report(
 
     overall_score, gated, gate_reason = apply_gate(overall_score, axes.content.score)
 
+    # 실제 채점이 돈 경우에만 코멘트를 만든다. 더미는 백엔드가 확인 중인 고정 문장 그대로다.
+    written = _written(session_id, req, rows, extra, transcripts, measured, per_question)
+    if written is not None:
+        if axes.content.status == "ok":
+            axes.content.evidence = [
+                Evidence(question_id=p.question_id, t_start=p.t_start, t_end=p.t_end,
+                         kind=p.kind, label=p.label, comment=p.comment)
+                for p in written.evidence
+            ]
+        improved = [
+            ImprovedAnswer(question_id=p.question_id, original_excerpt=p.excerpt,
+                           suggestion=p.suggestion, t_start=p.t_start, t_end=p.t_end)
+            for p in written.improved_answers
+        ]
+        company_comment = written.company_comment
+        resilience = _real_resilience(req.persona, rows, per_question)
+    else:
+        improved = _improved(rows)
+        company_comment = _company_comment(req)
+        # 친절형은 압박 구간이 없어 산출할 수 없다
+        resilience = _resilience(session_id, req.persona)
+
     return ReportResult(
         session_id=session_id,
         generated_at=_now(),
@@ -647,11 +679,88 @@ def build_report(
         ),
         axes=axes,
         questions=questions,
-        # 친절형은 압박 구간이 없어 산출할 수 없다
-        resilience=_resilience(session_id, req.persona),
-        company_comment=_company_comment(req),
-        improved_answers=_improved(rows),
+        resilience=resilience,
+        company_comment=company_comment,
+        improved_answers=improved,
     )
+
+
+def _written(session_id, req, rows, extra, transcripts, measured, per_question):
+    """코멘트를 만든다. 만들지 않는 경우(더미 · 요금 스위치 꺼짐)는 None.
+
+    진짜 Claude는 요금 스위치(USE_CONTENT_SCORING)가 켜져 있을 때만 부른다.
+    테스트가 채점기만 가짜로 꽂은 경우에 코멘트까지 진짜로 부르면, API 키가 있는
+    곳에서 테스트를 돌릴 때마다 요금이 나간다. 테스트는 WRITER_CALL에 가짜를 꽂는다.
+    """
+    if not transcripts:
+        return None
+    if WRITER_CALL is None and not content_scoring_enabled():
+        return None
+    from ai import report_writer
+
+    def answer_of(row) -> "report_writer.Answer":
+        heard = measured.heard.get(row.question_id) if measured else None
+        duration, _ = _length(row, measured)
+        return report_writer.Answer(
+            question_id=row.question_id,
+            question=row.text,
+            category=row.category,
+            kind=row.type,
+            text=(transcripts.get(row.question_id) or "").strip(),
+            content_score=per_question.get(row.question_id, {}).get("content", 0),
+            duration_sec=float(duration),
+            words=getattr(heard, "words", None),
+        )
+
+    answers = []
+    for r in rows:
+        a = answer_of(r)
+        a.reasks = [answer_of(x) for x in extra.get(r.question_id, [])]
+        answers.append(a)
+
+    return report_writer.write(
+        session_id, req.persona, req.job_role,
+        req.company_profile_override, answers, call=WRITER_CALL,
+    )
+
+
+# 압박 대응력 — 계약서 11장에서 미확정이던 산출식. (2026-09-25 확정)
+#
+# 압박형 면접에서 꼬리질문(파고드는 질문) 답변의 내용 점수가 주질문보다
+# 얼마나 떨어졌나로 본다. 덜 떨어질수록 높다. 이미 있는 내용 점수로 계산해
+# 요금이 들지 않고, 같은 입력이면 늘 같은 값이 나온다.
+#
+#   하락 = 주질문 평균 - 꼬리질문 평균 (음수면 0)
+#   점수 = 100 - 하락 × 2
+#
+# 꼬리질문이 하나도 없으면(답변이 모두 부실해 꼬리질문이 생략된 경우) 잴 수 없어 null이다.
+RESILIENCE_DROP_WEIGHT = 2
+
+
+def _real_resilience(persona, rows, per_question) -> Optional[Resilience]:
+    if persona != "pressure":
+        return None
+    mains = [per_question[r.question_id]["content"] for r in rows if r.type == "question"]
+    follows = [per_question[r.question_id]["content"] for r in rows if r.type == "followup"]
+    if not mains or not follows:
+        return None
+
+    main_avg = round(sum(mains) / len(mains))
+    follow_avg = round(sum(follows) / len(follows))
+    drop = main_avg - follow_avg
+    score = max(0, min(100, round(100 - max(0, drop) * RESILIENCE_DROP_WEIGHT)))
+
+    if drop <= 0:
+        comment = (f"압박 꼬리질문에서도 주질문과 같거나 더 높은 내용 점수를 유지했습니다 "
+                   f"(주질문 {main_avg}점, 꼬리질문 {follow_avg}점).")
+    elif drop < 10:
+        comment = (f"꼬리질문 내용 점수가 주질문보다 {drop}점 낮았지만 크게 흔들리지 않았습니다 "
+                   f"(주질문 {main_avg}점, 꼬리질문 {follow_avg}점).")
+    else:
+        comment = (f"꼬리질문에서 내용 점수가 {drop}점 떨어졌습니다 "
+                   f"(주질문 {main_avg}점, 꼬리질문 {follow_avg}점). "
+                   f"파고드는 질문에서 근거를 이어가는 연습이 필요합니다.")
+    return Resilience(score=score, display=display_of(score), comment=comment)
 
 
 def _resilience(session_id: str, persona: str) -> Optional[Resilience]:
@@ -737,7 +846,7 @@ def build_compare(req: CompareRequest) -> CompareResponse:
         trend=Trend(
             overall=overall,
             axes=TrendAxes(**axes_trend),
-            comment="내용 축은 상승했으나 시선 축은 변화가 크지 않습니다.",
+            comment=_trend_comment(axes_trend, _stalled(axes_trend)),
             stalled_axes=_stalled(axes_trend),
             best_round=best_round,
         ),
@@ -775,7 +884,7 @@ def _vs_previous(items) -> VsPrevious:
     comment = (
         "부분 리포트가 포함되어 총점은 비교하지 않았습니다."
         if not both_complete
-        else "문항별 점수 변화는 by_question에서 확인할 수 있습니다."
+        else _vs_comment(overall_delta, delta)
     )
     return VsPrevious(
         from_round=prev.round, to_round=cur.round,
@@ -807,16 +916,70 @@ def _by_question(items) -> list[ByQuestion]:
     out = []
     for qid in sorted(shared, key=lambda q: per_round[0][q].question_number):
         scores = [m[qid].score for m in per_round]
+        first_q = per_round[0][qid]
+        from_prev = scores[-1] - scores[-2] if len(scores) >= 2 else 0
+        from_first = scores[-1] - scores[0]
         out.append(ByQuestion(
             question_id=qid,
-            text=f"(더미) {qid} 주질문",
-            category=per_round[0][qid].category,
+            # 리포트에는 질문 문장이 없어(계약서 4장) 번호와 카테고리로 부른다.
+            # 화면에 문장이 필요하면 백엔드가 저장해 둔 질문을 쓰면 된다.
+            text=f"{first_q.question_number}번 {first_q.category or '질문'}",
+            category=first_q.category,
             scores=scores,
-            delta_from_previous=scores[-1] - scores[-2] if len(scores) >= 2 else 0,
-            delta_from_first=scores[-1] - scores[0],
-            comment="회차를 거듭하며 답변 구성이 달라졌습니다.",
+            delta_from_previous=from_prev,
+            delta_from_first=from_first,
+            comment=_question_comment(from_prev, from_first, len(scores)),
         ))
     return out
+
+
+# 회차 비교 코멘트는 점수 변화를 그대로 문장으로 옮긴다. Claude를 부르지 않는다.
+# 숫자에 있는 것만 말하므로 틀릴 일이 없고 요금도 들지 않는다.
+AXIS_NAMES = {"content": "내용", "speech": "말하기", "gaze": "시선"}
+
+
+def _signed(n: int) -> str:
+    return f"+{n}" if n > 0 else str(n)
+
+
+def _vs_comment(overall_delta: int, axis_delta: dict) -> str:
+    if overall_delta > 0:
+        head = f"직전 회차보다 총점이 {overall_delta}점 올랐습니다."
+    elif overall_delta < 0:
+        head = f"직전 회차보다 총점이 {-overall_delta}점 내려갔습니다."
+    else:
+        head = "직전 회차와 총점이 같습니다."
+    parts = [f"{AXIS_NAMES[a]} {_signed(d)}" for a, d in axis_delta.items() if d]
+    return f"{head} ({', '.join(parts)})" if parts else head
+
+
+def _trend_comment(axes_trend: dict, stalled: list) -> str:
+    moves = []
+    for a in AXES:
+        known = [s for s in axes_trend[a] if s is not None]
+        if len(known) >= 2 and known[-1] != known[0]:
+            moves.append(f"{AXIS_NAMES[a]} {known[0]}→{known[-1]}")
+    if not moves:
+        text = "회차 간 축 점수 변화가 없습니다."
+    else:
+        text = "첫 회차부터 지금까지 " + ", ".join(moves) + "."
+    if stalled:
+        text += " 최근 3회차 동안 " + ", ".join(AXIS_NAMES[a] for a in stalled) + " 점수가 정체돼 있습니다."
+    return text
+
+
+def _question_comment(from_prev: int, from_first: int, rounds: int) -> str:
+    if rounds < 2:
+        return "비교할 이전 회차가 없습니다."
+    if from_prev > 0:
+        text = f"직전 회차보다 {from_prev}점 올랐습니다."
+    elif from_prev < 0:
+        text = f"직전 회차보다 {-from_prev}점 내려갔습니다."
+    else:
+        text = "직전 회차와 같은 점수입니다."
+    if rounds > 2:
+        text += f" 1회차 대비 {_signed(from_first)}점입니다."
+    return text
 
 
 # ---------------------------------------------------------------------------
@@ -849,3 +1012,6 @@ def reset() -> None:
     IDEMPOTENCY.clear()
     _CONTENT_CACHE.clear()
     _GAZE_CACHE.clear()
+    from ai import report_writer
+
+    report_writer.reset()

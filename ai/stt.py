@@ -278,6 +278,18 @@ def speech_score(metrics: dict) -> int:
     return max(0, min(100, round(score)))
 
 
+def word_timings(segments) -> list[dict]:
+    """단어마다 [말한 글자, 시작 초, 끝 초]. 오디오 시작 기준이다."""
+    out = []
+    for seg in segments:
+        for w in getattr(seg, "words", None) or []:
+            text = (w.word or "").strip()
+            if text:
+                out.append({"text": text, "start": round(float(w.start), 2),
+                            "end": round(float(w.end), 2)})
+    return out
+
+
 # ---------------------------------------------------------------------------
 # 4. 캐시 — session_id + question_id
 # (세션 중 꼬리질문 생성용으로 이미 전사한 걸 리포트가 재사용)
@@ -349,6 +361,9 @@ def process_answer(
         **speech_metrics,
         **ending_metrics,
         **fluency_metrics,
+        # 단어별 시간. 리포트가 「답변의 몇 초 부분」을 근거로 짚을 때 쓴다.
+        # word_timestamps=True로 이미 계산하던 값을 버리지 않고 담기만 한다.
+        "words": word_timings(segments),
     }
 
     cache_set(session_id, question_id, result)

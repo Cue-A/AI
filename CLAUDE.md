@@ -64,6 +64,7 @@ ai/
   report_schemas.py   리포트 생성 계약의 요청 · 응답 모델
   report_dummy.py     점수 생성, 축 재정규화, 회차 비교
   report_pipeline.py  리포트 흐름 — 전사 후 조립. 더미/llm 분기
+  report_writer.py    리포트 글 칸 — 근거 · 개선 답변 · 기업 코멘트 (리포트당 Claude 1회)
 main.py               FastAPI 진입점, 예외 핸들러, /health · /ready
 tests/
   test_schemas.py     계약서 JSON 예시 파싱
@@ -82,6 +83,7 @@ tests/
   test_end_to_end.py  자소서 → 면접 → 리포트 한 바퀴
   test_measured.py    말하기 지표 · 시선 점수가 리포트에 실제로 들어가는지
   test_tts_path.py    질문 음성을 백엔드가 정한 S3 경로에 올리는지
+  test_report_writer.py  리포트 글 칸 — 지어낸 발췌를 버리는지, 실패해도 리포트가 나가는지
 scripts/
   compare_models.py   같은 이력서로 모델을 바꿔 돌려 품질 비교
 Dockerfile            base / dummy / full 멀티스테이지
