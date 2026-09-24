@@ -24,6 +24,7 @@ B가 붙일 모듈의 모양은 이렇다.
 
 `persona`는 "friendly" 또는 "pressure"다. 둘이 속도와 톤에서 구분되어야 한다.
 """
+import inspect
 import logging
 import os
 from typing import Optional
@@ -42,8 +43,16 @@ def tts_enabled() -> bool:
     return os.environ.get(TTS_ENV, "").strip().lower() in ("1", "true", "yes", "on")
 
 
-def synthesize(text: str, persona: str) -> Optional[str]:
+def synthesize(
+    text: str,
+    persona: str,
+    session_id: Optional[str] = None,
+    question_id: Optional[str] = None,
+) -> Optional[str]:
     """질문 음성의 URL. 만들지 못하면 None.
+
+    session_id · question_id는 S3 경로를 정하는 데 쓴다.
+    (sessions/{sessionId}/questions/{questionId}.mp3, 백엔드 20-storage.md)
 
     None이면 부르는 쪽이 audio_url을 null로 둔다. 예외를 올리지 않는 것은
     계약서 8장 때문이다 — TTS 실패는 재시도하지 않고 텍스트로 진행한다.
@@ -67,7 +76,11 @@ def synthesize(text: str, persona: str) -> Optional[str]:
         return None
 
     try:
-        url = fn(text, persona)
+        if _takes_ids(fn):
+            url = fn(text, persona, session_id=session_id, question_id=question_id)
+        else:
+            # 번호를 받지 않는 예전 모양도 그대로 돈다
+            url = fn(text, persona)
     except Exception as e:
         # 여기서 예외를 올리면 질문이 이미 만들어졌는데도 세션이 끊긴다
         logger.warning("음성 합성에 실패했습니다 (%s). 텍스트로 진행합니다", type(e).__name__)
@@ -78,3 +91,12 @@ def synthesize(text: str, persona: str) -> Optional[str]:
         return None
 
     return url
+
+
+def _takes_ids(fn) -> bool:
+    """tts.synthesize가 세션 · 질문 번호를 받는가."""
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+    return "session_id" in params and "question_id" in params
