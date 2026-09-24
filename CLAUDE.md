@@ -41,6 +41,9 @@ docs/                 계약서와 설계 문서. 이것이 스펙입니다
   내용채점_프롬프트_초안.md              D 전달용. 두 단계 채점 Rubric (검증 완료)
   앵커답변_초안.md                      D 전달용. 기준 답변 6종 + 블라인드 양식
   난이도_블라인드채점.md                 L1·L2·L3가 사람 눈에 갈리는지 확인
+  AI_파트_일정.md                        AI 파트 할 일과 다른 파트와 맞출 것
+  백엔드_미확정사항_회신.md              백엔드 90-open-questions 10개에 대한 답
+  리포트계약_최종본_전달.md              노션 최종본 이후 바뀐 리포트 값
 ai/
   session_plan.py     세션 구성 로직. 검증된 파일 — 아래 예외 외에는 수정 금지
   schemas.py          계약서의 요청 · 응답 Pydantic 모델
@@ -55,7 +58,7 @@ ai/
   pipeline.py         세션 시작 · 답변 처리 흐름 — 더미/llm 분기
   router.py           /ai/* 엔드포인트, 시크릿 헤더 검증
   errors.py           에러 응답 형식
-  companies.py        회사 목록 (verified 필터)
+  companies.py        기업 인재상 — 받은 override에 추론 금지 문장 붙이기
   data/companies.json
   report_router.py    리포트 엔드포인트
   report_schemas.py   리포트 생성 계약의 요청 · 응답 모델
@@ -141,16 +144,19 @@ def synthesize(text: str, persona: str) -> str:
 
 ```
 verdict 2단계    LLM 판정. 일관성 검증이 끝나야 켠다. 지금은 항상 None
-말하기 점수      지표(metrics)는 실제 값. 점수 변환식은 B가 report_dummy.SPEECH_SCORER에 꽂는다
+배포            아직 안 했다. 백엔드는 MockAiClient로 자기 흐름만 확인한 상태다
 ```
 
 ### 리포트 축별로 실제 값이 어디서 오는가
 
 ```
 content   ai/content_eval.py (D)                USE_CONTENT_SCORING. 문항당 약 2원
-speech    전사 때 B가 계산한 발화 지표           metrics는 실제, 점수는 SPEECH_SCORER 전까지 해시
+speech    ai/stt.py의 speech_score (B)          전사가 돌면 자동. 요금 없음
 gaze      infra/gaze_analysis (C) + gaze_score  USE_GAZE=1 + GAZE_WEIGHTS. GPU 필요
 ```
+
+축 가중치는 content 0.5 / speech 0.25 / gaze 0.25로 확정됐다(2026-09-23).
+영상 9개의 세 축 점수를 사람 순위와 비교해 정했다.
 
 전사 결과(`AnswerText`)는 텍스트만이 아니라 발화 지표(`fluency`)까지 들고
 리포트로 넘어온다. 되묻기 답변은 원 답변 뒤에 이어 붙여 채점하고 전사에도 그렇게 보인다.

@@ -205,59 +205,58 @@ def profile_passed(fake_llm):
     return fake_llm.generate.call_args.kwargs["company_profile"]
 
 
-def test_verified가_false면_인재상을_쓰지_않는다(client, auth, llm_mode, fake_llm):
-    """공식 채용페이지에서 확인되지 않은 내용으로 질문을 만들면
-    미확인 데이터가 서비스에 노출되는 셈이다."""
-    res = client.post("/ai/sessions", headers=auth,
-                      json={**BODY, "company_id": "samsung_electronics"})
+HYUNDAI = "현대건설(주) (종합건설 · 플랜트)\n\n핵심 가치\n  도전 — 새로운 방식을 먼저 시도한다"
+
+
+def test_company_id만_오면_인재상을_찾지_않는다(client, auth, llm_mode, fake_llm):
+    """기업 데이터는 백엔드가 관리한다. company_id는 백엔드 PK를 문자열로 받은
+    추적용 값이다. (노션 최종 계약본, 백엔드와 합의)"""
+    res = client.post("/ai/sessions", headers=auth, json={**BODY, "company_id": "17"})
     poll_until_done(client, auth, res.json()["task_id"])
     assert profile_passed(fake_llm) is None
 
 
-def test_등록_직무가_없으면_추론하지_말라고_붙인다(client, auth, llm_mode, fake_llm):
-    """이게 없으면 LLM이 그 기업의 직무 요구역량을 그럴듯하게 지어낸다."""
-    res = client.post("/ai/sessions", headers=auth,
-                      json={**BODY, "company_id": "hyundai_enc", "job_role": "백엔드 개발"})
+def test_인재상은_보낸_그대로_쓴다(client, auth, llm_mode, fake_llm):
+    res = client.post("/ai/sessions", headers=auth, json={
+        **BODY, "company_id": "17", "company_profile_override": HYUNDAI,
+    })
     poll_until_done(client, auth, res.json()["task_id"])
 
     profile = profile_passed(fake_llm)
-    assert "현대건설" in profile
-    assert "도전" in profile                    # 핵심 가치는 들어간다
-    assert "추론하지 말고" in profile            # 직무 요건은 지어내지 말라고 못박는다
+    assert profile.startswith(HYUNDAI)
 
 
-def test_직접_입력값이_company_id보다_우선한다(client, auth, llm_mode, fake_llm, monkeypatch):
-    """계약서 2장 — company_profile_override가 있으면 company_id보다 우선한다."""
-    monkeypatch.setattr(companies, "profile_for", lambda cid, job=None: "등록된 인재상")
-
+def test_직무_요구역량이_없으면_추론하지_말라고_붙인다(client, auth, llm_mode, fake_llm):
+    """계약서: 백엔드는 인재상만 보내면 되고, 추론 금지 문장은 AI가 붙인다.
+    이게 없으면 LLM이 그 기업의 직무 요구역량을 그럴듯하게 지어낸다."""
     res = client.post("/ai/sessions", headers=auth, json={
-        **BODY, "company_id": "hyundai_enc",
-        "company_profile_override": "직접 입력한 인재상",
+        **BODY, "company_profile_override": HYUNDAI,
     })
     poll_until_done(client, auth, res.json()["task_id"])
+    assert "추론하지 말고" in profile_passed(fake_llm)
 
-    assert profile_passed(fake_llm) == "직접 입력한 인재상"
 
-
-def test_등록_직무가_있으면_요구역량을_넣는다(client, auth, llm_mode, fake_llm, monkeypatch):
-    """job_requirements의 키와 job_role이 맞으면 그 직무 요건을 함께 준다."""
-    from ai.schemas import CompanyRecord
-
-    record = CompanyRecord.model_validate({
-        "company_id": "acme", "name": "에이크미", "industry": "IT",
-        "values_format": "단어형", "verified": True,
-        "core_values": [{"name": "도전"}],
-        "job_requirements": {"backend": ["대규모 트래픽 환경에서의 안정성 확보"]},
+def test_직무_요구역량이_있으면_붙이지_않는다(client, auth, llm_mode, fake_llm):
+    text = HYUNDAI + "\n\n백엔드 개발 직무 요구역량\n  대규모 트래픽 환경에서의 안정성 확보"
+    res = client.post("/ai/sessions", headers=auth, json={
+        **BODY, "company_profile_override": text,
     })
-    monkeypatch.setattr(companies, "load_records", lambda: (record,))
-
-    res = client.post("/ai/sessions", headers=auth,
-                      json={**BODY, "company_id": "acme", "job_role": "backend"})
     poll_until_done(client, auth, res.json()["task_id"])
 
     profile = profile_passed(fake_llm)
     assert "대규모 트래픽" in profile
-    assert "추론하지 말고" not in profile        # 자료가 있으니 붙이지 않는다
+    assert "추론하지 말고" not in profile
+
+
+def test_추론_금지_문장은_두_번_붙지_않는다():
+    """AI가 만든 형식(profile_for)을 백엔드가 그대로 보내도 한 번만 들어간다."""
+    made = companies.profile_for("hyundai_enc", "백엔드 개발")
+    assert companies.guard(made).count("추론하지 말고") == 1
+
+
+def test_빈_인재상은_기업_미선택으로_본다():
+    assert companies.guard("   ") is None
+    assert companies.guard(None) is None
 
 
 def test_회사를_안_고르면_None(client, auth, llm_mode, fake_llm):
@@ -422,6 +421,25 @@ def test_전사가_실패하면_STT_FAILED가_나간다(client, auth, llm_mode, 
     assert done["status"] == "error"
     assert done["error_code"] == "STT_FAILED"
     assert "result" not in done
+
+
+def test_답변_처리에서는_다운로드_실패도_STT_FAILED다(client, auth, llm_mode, fake_llm):
+    """질문 생성 계약에는 MEDIA_FETCH_FAILED가 없다. 리포트에만 있다.
+    계약에 없는 코드를 내보내면 백엔드 분기가 깨진다."""
+    from ai.answers import MediaFetchError
+
+    sid, first = _first_question(client, auth)
+    fake_llm.transcribe.side_effect = MediaFetchError("HTTP 403")
+
+    res = client.post(f"/ai/sessions/{sid}/answers", headers=auth, json={
+        "question_id": first["question_id"],
+        "audio_url": "https://s3.../ans.webm",
+        "video_url": None,
+        "is_timeout": False,
+    })
+    done, _ = poll_until_done(client, auth, res.json()["task_id"])
+
+    assert done["error_code"] == "STT_FAILED"
 
 
 def test_꼬리질문_생성이_실패해도_세션은_이어진다(client, auth, llm_mode, fake_llm):

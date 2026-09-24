@@ -321,9 +321,17 @@ def test_친절형은_resilience가_null(client, auth):
     assert pressure["resilience"]["display"] == display_of(pressure["resilience"]["score"])
 
 
-def test_회사_미선택이면_company_comment가_null(client, auth):
-    없음, _ = make_report(client, auth, six_answers(), company_id=None, idem=1)
-    있음, _ = make_report(client, auth, six_answers(), company_id="hyundai_enc", idem=2)
+def test_인재상이_없으면_company_comment가_null(client, auth):
+    """계약서: company_profile_override가 null이면 null.
+    company_id는 추적용이라 있어도 코멘트를 만들지 않는다."""
+    body = report_body(six_answers(), company_id="17")
+    res = client.post("/ai/sessions/sess_cc/report", headers={**auth, **key(1)}, json=body)
+    없음 = client.get(f"/ai/tasks/{res.json()['task_id']}", headers=auth).json()["result"]
+
+    body["company_profile_override"] = "현대건설(주) (종합건설)\n\n핵심 가치\n  도전"
+    res = client.post("/ai/sessions/sess_cc/report", headers={**auth, **key(2)}, json=body)
+    있음 = client.get(f"/ai/tasks/{res.json()['task_id']}", headers=auth).json()["result"]
+
     assert 없음["company_comment"] is None
     assert 있음["company_comment"] is not None
 

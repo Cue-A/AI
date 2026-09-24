@@ -124,13 +124,50 @@ def test_말하기_metrics가_실제_지표로_채워진다(client, auth, llm_mo
     assert speech["evidence"] == []
 
 
-def test_변환식을_꽂기_전에는_말하기_점수가_더미다(client, auth, llm_mode, fake_stt):
-    """점수는 B가 변환식을 줄 때까지 해시로 간다. 지표만 먼저 실제 값이다."""
+def test_말하기_점수는_B의_변환식으로_나온다(client, auth, llm_mode, fake_stt):
+    """따로 꽂지 않아도 stt.speech_score가 쓰인다.
+
+    머뭇거림 20 → 80점, 40 → 60점. 마무리 감점은 지표가 없어 걸리지 않는다.
+    """
     result = make(client, auth, six_answers())["result"]
+    assert result["axes"]["speech"]["score"] == 70     # (80*3 + 60*3) / 6
+    by_q = {q["question_id"]: q["axes"]["speech"] for q in result["questions"]}
+    assert by_q["q_1"] == 80 and by_q["q_2"] == 60
+
+
+def test_말끝을_흐리면_말하기_점수가_깎인다(client, auth, llm_mode, monkeypatch):
+    """마무리 지표를 넘기지 않으면 흐지부지 끝낸 답변과 또박또박 끝낸 답변이
+    같은 점수를 받는다. 그것을 막는 테스트다."""
+    def transcribe(*, audio_url, session_id, question_id, is_timeout=False):
+        trailing = question_id == "q_1"
+        return AnswerText(
+            duration_sec=30, word_count=40, text=f"{question_id} 답변",
+            fluency={
+                "hesitation_score": 20.0, "speech_rate_cv": 0.2, "repetition_count": 1,
+                "trailing_off": trailing, "silent_ending": False, "is_timeout": False,
+            },
+        )
+
+    with mock_patch.object(answers, "transcribe", side_effect=transcribe):
+        result = make(client, auth, six_answers())["result"]
+
+    by_q = {q["question_id"]: q["axes"]["speech"] for q in result["questions"]}
+    assert by_q["q_1"] < by_q["q_2"], "말끝을 흐린 답변이 더 낮아야 합니다"
+
+
+def test_지표가_없으면_말하기_점수는_더미다(client, auth, llm_mode):
+    """전사 결과에 발화 지표가 없을 때다. 억지로 점수를 만들지 않는다."""
+    def transcribe(*, audio_url, session_id, question_id, is_timeout=False):
+        return AnswerText(duration_sec=30, word_count=40, text="답변")
+
+    with mock_patch.object(answers, "transcribe", side_effect=transcribe):
+        result = make(client, auth, six_answers())["result"]
+
     expected = round(sum(
         report_dummy.score_for("sess_rp", f"q_{n}", "speech") for n in range(1, 7)
     ) / 6)
     assert result["axes"]["speech"]["score"] == expected
+    assert result["axes"]["speech"]["metrics"] == {}
 
 
 def test_변환식을_꽂으면_말하기_점수가_지표에서_나온다(

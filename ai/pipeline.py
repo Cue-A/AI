@@ -85,14 +85,17 @@ def _prepare(task: BackgroundTask, session: DummySession, req: SessionCreateRequ
 
 
 def _company_profile(req: SessionCreateRequest) -> Optional[str]:
-    """질문에 반영할 인재상.
+    """질문에 반영할 인재상. 백엔드가 보낸 company_profile_override만 쓴다.
 
-    직접 입력값이 company_id보다 우선한다 (계약서 2장).
-    둘 다 없으면 None이고, 그러면 직무만으로 질문을 만든다.
+    기업 데이터는 백엔드가 관리한다. company_id는 백엔드 PK를 문자열로 받은
+    추적용 값이라 조회하지 않고 로그에만 남긴다. (노션 최종 계약본, 백엔드와 합의)
+    직무 요구역량이 없으면 추론 금지 문장을 붙인다. 없으면 None이고,
+    그러면 직무만으로 질문을 만든다.
     """
-    return req.company_profile_override or companies.profile_for(
-        req.company_id, req.job_role
-    )
+    if req.company_id:
+        logger.info("기업 %s 세션 — 인재상 %s", req.company_id,
+                    "있음" if req.company_profile_override else "없음")
+    return companies.guard(req.company_profile_override)
 
 
 def start_session(req: SessionCreateRequest) -> tuple[DummySession, str]:

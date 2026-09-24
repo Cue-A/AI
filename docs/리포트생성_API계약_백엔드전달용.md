@@ -6,7 +6,7 @@
 | 짝 문서 | 「질문 생성 API 계약」 |
 | 확정 범위 | 응답 구조 · 에러 · 부분실패 · 멱등성 · 타임스탬프 규칙 |
 | v0.2 변경 | `answers[]`에 `is_replay` · `is_spare_topic` 추가, 에러 본문 형식 명시 |
-| 미확정 | 축별 세부 지표 필드, 가중치, 임계값 |
+| 미확정 | 내용·시선 축의 세부 지표 필드, 게이트 임계값 |
 
 미확정 항목은 **필드 추가만** 발생한다.
 구조와 기존 필드명은 바뀌지 않으므로 백엔드는 지금 파싱 코드를 짜도 된다.
@@ -78,8 +78,8 @@ Idempotency-Key: rpt_sess9f2a1c_01
 {
   "persona": "pressure",
   "job_role": "백엔드 개발",
-  "company_id": "hyundai_enc",
-  "company_profile_override": null,
+  "company_id": "17",
+  "company_profile_override": "현대건설(주) (종합건설 · 플랜트)\n\n핵심 가치\n  도전 — ...",
   "answers": [
     {
       "question_id": "q_1",
@@ -139,7 +139,7 @@ AI 서버는 세션을 보관하지 않아 요청으로 받지 않으면 알 수
 
 페르소나 값도 동일하게 `friendly` / `pressure`를 쓰며,
 문서에서는 친절형 / 압박형으로 부른다.
-| `company_profile_override` | 미등록 기업 인재상 직접 입력값. 없으면 null |
+| `company_profile_override` | 지원 기업의 인재상 텍스트. 면접 시작 때 보낸 것과 같은 값. 회사 미선택이면 null |
 
 **`is_timeout`이 true인 답변은 감점하지 않는다.**
 시간이 끊은 것이지 답변자가 마무리를 못 한 것이 아니다.
@@ -304,7 +304,7 @@ composing      리포트 조립
 | `axes.*.error_code` | `status`가 `failed`일 때만 나온다. `ok`·`skipped`에는 필드가 없다 |
 | `axes.*.reason` | `status`가 `skipped`일 때만 나온다 |
 | `resilience` | **친절형은 항상 null.** 압박 구간이 없어 산출 불가 |
-| `company_comment` | 회사 미선택이면 null |
+| `company_comment` | `company_profile_override`가 null이면 null. `company_id`는 보지 않는다 |
 
 `metrics`가 비어 있는 것은 오류가 아니다.
 축별 지표가 확정되는 대로 키가 추가되며, 기존 필드는 바뀌지 않는다.
@@ -436,11 +436,14 @@ gaze 실패      남은 축으로 재정규화
 축 가중치를 남은 축에 비례 배분한다.
 
 ```
-정상       content 0.5   speech 0.3   gaze 0.2
-gaze 실패  content 0.625 speech 0.375
+정상       content 0.5   speech 0.25  gaze 0.25
+gaze 실패  content 0.667 speech 0.333
+speech 실패 content 0.667 gaze 0.333
 ```
 
-가중치는 **잠정값이며 검증 후 확정한다.**
+**가중치는 확정됐다(2026-09-23).** 영상 9개(3명 × 3문항)의 실제 세 축 점수를
+사람이 매긴 순위와 비교해 정했다. 상관계수 0.88이다.
+값이 바뀌어도 응답 구조는 그대로다.
 
 재정규화가 일어나면 `overall.partial`이 true가 되고
 `axes_used`, `axes_failed`에 어느 축이 쓰였는지 담긴다.
@@ -638,6 +641,21 @@ MEDIA_FETCH_FAILED    오디오·영상 다운로드 실패                  500
 `SPEECH_FAILED`와 `GAZE_FAILED`는 HTTP 오류가 아니다.
 `status: done`으로 응답하되 해당 축의 `status`가 `failed`가 된다.
 
+**위 표의 500도 대부분 HTTP 응답이 아니다.** 리포트 생성은 202로 받고
+폴링하는 구조라, `CONTENT_FAILED` · `STT_FAILED` · `MEDIA_FETCH_FAILED`는
+생성 요청이 아니라 **task 폴링 응답**으로 나간다.
+
+```json
+{ "status": "error", "error_code": "CONTENT_FAILED", "message": "..." }
+```
+
+400과 422(`INVALID_REQUEST` · `INVALID_ANSWERS` · `REPORT_TOO_SHORT`)만
+생성 요청에서 바로 HTTP 오류로 돌아온다. 요청을 받기 전에 걸러지기 때문이다.
+
+**리포트 재요청은 같은 `Idempotency-Key`를 쓴다.** 그러면 새 작업을 만들지 않고
+기존 `task_id`를 그대로 돌려준다. 질문 생성 쪽과 다른 점이다.
+질문 생성에는 멱등성 키가 없어 재전송하면 새 `task_id`가 나온다.
+
 ### 재시도 분류
 
 | 코드 | 재시도 | 처리 |
@@ -674,7 +692,7 @@ MEDIA_FETCH_FAILED    오디오·영상 다운로드 실패                  500
 | 항목 | 확정 시기 |
 | --- | --- |
 | `metrics` 세부 필드 | 축별 담당자가 지표 확정 후 |
-| 축 가중치 (0.5 / 0.3 / 0.2) | 앵커 답변 세트 검증 후 |
+| ~~축 가중치~~ | **확정 0.5 / 0.25 / 0.25 (9-23)** |
 | 게이트 임계값·상한값 | 앵커 답변 세트 검증 후 |
 | `resilience` 산출식 | 압박형 실제 세션 확보 후 |
 

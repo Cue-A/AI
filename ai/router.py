@@ -3,25 +3,25 @@
 POST  /ai/sessions                         세션 시작
 POST  /ai/sessions/{session_id}/answers    답변 제출
 GET   /ai/tasks/{task_id}                  작업 상태 조회 (폴링)
-GET   /ai/companies                        회사 목록
 POST  /ai/sessions/{session_id}/abort      세션 중단
+
+GET /ai/companies는 없앴다. 기업 데이터는 백엔드가 관리하고 인재상을
+company_profile_override로 보낸다. (노션 최종 계약본, 백엔드와 합의)
 
 더미는 즉시 계산해서 저장해두고 GET /ai/tasks에서 꺼내준다.
 AI_MODE가 dummy가 아니면 세션 시작이 실제로 백그라운드에서 돈다 (ai/pipeline.py).
-Celery와 Redis는 쓰지 않는다.
 """
 import os
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Header
 
-from ai import companies, dummy, pipeline
+from ai import dummy, pipeline
 from ai.errors import ApiError
 from ai.schemas import (
     AbortResponse,
     AnswerSubmitRequest,
     AnswerSubmitResponse,
-    CompanyOut,
     SessionCreateRequest,
     SessionCreateResponse,
 )
@@ -131,16 +131,6 @@ def get_task(task_id: str):
         # 상황이라는 점에서 SESSION_NOT_FOUND와 처리가 같다.
         raise ApiError(404, "SESSION_NOT_FOUND", "작업이 없거나 만료되었습니다")
     return task
-
-
-# ---------------------------------------------------------------------------
-# 6. 회사 목록
-# ---------------------------------------------------------------------------
-
-
-@router.get("/companies", response_model=list[CompanyOut])
-def list_companies() -> list[CompanyOut]:
-    return companies.verified_companies()
 
 
 # ---------------------------------------------------------------------------

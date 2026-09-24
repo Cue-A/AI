@@ -88,12 +88,36 @@ def test_되묻기_답변도_전사한다(client, auth, llm_mode, fake_stt):
 
 
 def test_전사가_실패하면_STT_FAILED가_나간다(client, auth, llm_mode, fake_stt):
-    fake_stt.side_effect = SttError("음성을 내려받지 못했습니다")
+    fake_stt.side_effect = SttError("무음입니다")
     body = make(client, auth, six_answers())
 
     assert body["status"] == "error"
     assert body["error_code"] == "STT_FAILED"
     assert "result" not in body
+
+
+def test_파일을_못_받으면_MEDIA_FETCH_FAILED가_나간다(client, auth, llm_mode, fake_stt):
+    """presigned URL 만료가 대부분이다. 백엔드가 새 URL로 한 번 다시 요청하면
+    풀리므로, 오디오 자체 문제(STT_FAILED, 재시도 없음)와 구분해야 한다."""
+    fake_stt.side_effect = answers.MediaFetchError("HTTP 403")
+    body = make(client, auth, six_answers())
+
+    assert body["status"] == "error"
+    assert body["error_code"] == "MEDIA_FETCH_FAILED"
+
+
+def test_URL이_만료되면_MediaFetchError다(monkeypatch):
+    import httpx2
+
+    def get(self, url):
+        request = httpx2.Request("GET", url)
+        raise httpx2.HTTPStatusError(
+            "forbidden", request=request, response=httpx2.Response(403, request=request)
+        )
+
+    monkeypatch.setattr(httpx2.Client, "get", get)
+    with pytest.raises(answers.MediaFetchError):
+        answers._download("https://s3.../expired.webm")
 
 
 def test_리포트도_processing을_거친다(client, auth, llm_mode, fake_stt):

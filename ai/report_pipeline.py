@@ -12,8 +12,7 @@ AI_MODE가 dummy면 이 흐름을 타지 않는다. 오디오를 보지 않고 �
 축마다 실제 값이 어디서 오는지:
 
     content   ai/content_eval.py (D). USE_CONTENT_SCORING으로 따로 켠다
-    speech    지표는 전사 때 B가 계산한 값. 점수 변환식은 B가 꽂을 자리
-              (report_dummy.SPEECH_SCORER). 꽂기 전에는 점수만 해시다
+    speech    전사 때 B가 계산한 지표 → stt.speech_score. 요금 없음
     gaze      USE_GAZE=1이면 C의 L2CS 파이프라인 + gaze_score(). 끄면 해시
 """
 import logging
@@ -21,7 +20,7 @@ from typing import Optional
 
 from ai import answers as answers_mod
 from ai import dummy, gaze as gaze_mod, llm, report_dummy, tasks
-from ai.answers import AnswerText, SttError
+from ai.answers import AnswerText, MediaFetchError, SttError
 from ai.gaze import GazeError
 from ai.report_schemas import (
     ReportCreateRequest,
@@ -93,6 +92,9 @@ def _measure(task: BackgroundTask, session_id: str, answers, axes=REPORT_STAGES)
     task.set_stage("transcribing")
     try:
         heard = transcribe_all(session_id, answers)
+    except MediaFetchError as e:
+        # 내려받기 실패는 따로 알린다. 새 presigned URL로 다시 요청하면 풀린다
+        raise TaskFailed("MEDIA_FETCH_FAILED", str(e)) from e
     except SttError as e:
         raise TaskFailed("STT_FAILED", str(e)) from e
 
