@@ -81,6 +81,7 @@ tests/
   test_store.py       세션 · 작업 보관소. Redis 없어도 뜨는지, 워커 여러 개
   test_end_to_end.py  자소서 → 면접 → 리포트 한 바퀴
   test_measured.py    말하기 지표 · 시선 점수가 리포트에 실제로 들어가는지
+  test_tts_path.py    질문 음성을 백엔드가 정한 S3 경로에 올리는지
 scripts/
   compare_models.py   같은 이력서로 모델을 바꿔 돌려 품질 비교
 Dockerfile            base / dummy / full 멀티스테이지
@@ -127,9 +128,13 @@ null로 둔 채 텍스트로 진행합니다. 질문 텍스트가 이미 만들�
 `ai/tts.py`는 B가 붙입니다. 모양은 이렇습니다.
 
 ```python
-def synthesize(text: str, persona: str) -> str:
-    """음성을 만들어 어딘가에 올리고 재생 가능한 URL을 준다."""
+def synthesize(text, persona, session_id=None, question_id=None) -> str:
+    """음성을 만들어 S3에 올리고 재생 가능한 URL을 준다."""
 ```
+
+올리는 경로는 백엔드 규칙 `sessions/{sessionId}/questions/{questionId}.mp3`다.
+AI의 S3 쓰기 권한이 이 경로로만 열리기 때문이다. 같은 문장은 합성 결과를
+재사용하고 업로드만 새 경로로 한다(재연습 때 Typecast 요금을 아끼려고).
 
 모듈이 없어도, 함수 이름이 달라도, 합성이 터져도 서버는 돕니다.
 
