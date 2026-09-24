@@ -461,7 +461,7 @@ def test_is_timeout이면_되묻지_않는다(client, auth):
 
 
 def test_잘못된_시크릿이면_401(client):
-    res = client.get("/ai/companies", headers={"X-Cueanda-Secret": "wrong-secret"})
+    res = client.get("/ai/tasks/task_001", headers={"X-Cueanda-Secret": "wrong-secret"})
     assert res.status_code == 401
     assert res.json() == {
         "error_code": "UNAUTHORIZED",
@@ -480,19 +480,8 @@ def test_health와_ready는_시크릿_없이_통과한다(client):
     assert client.get("/ready").status_code == 200
 
 
-def test_verified가_false인_회사는_나오지_않는다(client, auth):
+def test_회사_목록_API는_없다(client, auth):
+    """기업 데이터는 백엔드가 관리한다. (노션 최종 계약본, 백엔드와 합의)
+    남아 있으면 백엔드가 두 원본 중 무엇을 믿을지 헷갈린다."""
     res = client.get("/ai/companies", headers=auth)
-    assert res.status_code == 200
-    from ai import companies
-
-    listed = res.json()
-    ids = [c["company_id"] for c in listed]
-    assert ids, "노출할 기업이 하나도 없습니다"
-
-    # 데이터가 바뀌어도 성립해야 하므로 목록을 고정하지 않고 규칙을 검증한다
-    records = {r.company_id: r for r in companies.load_records()}
-    assert ids == [cid for cid, r in records.items() if r.verified]
-    assert all(not records[cid].verified for cid in records if cid not in ids)
-
-    # 인재상은 응답에 담기지 않는다 (계약서 6장)
-    assert all(set(c) == {"company_id", "name", "industry"} for c in listed)
+    assert res.status_code == 404

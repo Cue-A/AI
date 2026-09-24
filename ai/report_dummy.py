@@ -604,8 +604,9 @@ def _resilience(session_id: str, persona: str) -> Optional[Resilience]:
 
 
 def _company_comment(req: ReportCreateRequest) -> Optional[str]:
-    if not req.company_id and not req.company_profile_override:
-        return None  # 회사 미선택이면 null
+    # 계약서: company_profile_override가 null이면 null. company_id는 추적용이라 보지 않는다
+    if not req.company_profile_override or not req.company_profile_override.strip():
+        return None
     return "인재상에 비추어 협업 경험을 더 구체적으로 제시하면 좋겠습니다."
 
 

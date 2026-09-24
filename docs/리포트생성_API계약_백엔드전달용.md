@@ -78,8 +78,8 @@ Idempotency-Key: rpt_sess9f2a1c_01
 {
   "persona": "pressure",
   "job_role": "백엔드 개발",
-  "company_id": "hyundai_enc",
-  "company_profile_override": null,
+  "company_id": "17",
+  "company_profile_override": "현대건설(주) (종합건설 · 플랜트)\n\n핵심 가치\n  도전 — ...",
   "answers": [
     {
       "question_id": "q_1",
@@ -139,7 +139,7 @@ AI 서버는 세션을 보관하지 않아 요청으로 받지 않으면 알 수
 
 페르소나 값도 동일하게 `friendly` / `pressure`를 쓰며,
 문서에서는 친절형 / 압박형으로 부른다.
-| `company_profile_override` | 미등록 기업 인재상 직접 입력값. 없으면 null |
+| `company_profile_override` | 지원 기업의 인재상 텍스트. 면접 시작 때 보낸 것과 같은 값. 회사 미선택이면 null |
 
 **`is_timeout`이 true인 답변은 감점하지 않는다.**
 시간이 끊은 것이지 답변자가 마무리를 못 한 것이 아니다.
@@ -304,7 +304,7 @@ composing      리포트 조립
 | `axes.*.error_code` | `status`가 `failed`일 때만 나온다. `ok`·`skipped`에는 필드가 없다 |
 | `axes.*.reason` | `status`가 `skipped`일 때만 나온다 |
 | `resilience` | **친절형은 항상 null.** 압박 구간이 없어 산출 불가 |
-| `company_comment` | 회사 미선택이면 null |
+| `company_comment` | `company_profile_override`가 null이면 null. `company_id`는 보지 않는다 |
 
 `metrics`가 비어 있는 것은 오류가 아니다.
 축별 지표가 확정되는 대로 키가 추가되며, 기존 필드는 바뀌지 않는다.

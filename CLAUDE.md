@@ -41,9 +41,9 @@ docs/                 계약서와 설계 문서. 이것이 스펙입니다
   내용채점_프롬프트_초안.md              D 전달용. 두 단계 채점 Rubric (검증 완료)
   앵커답변_초안.md                      D 전달용. 기준 답변 6종 + 블라인드 양식
   난이도_블라인드채점.md                 L1·L2·L3가 사람 눈에 갈리는지 확인
-  통합_일정.md                          프론트·백엔드·AI 연결부터 부스 운영까지 선후관계
+  AI_파트_일정.md                        AI 파트 할 일과 다른 파트와 맞출 것
   백엔드_미확정사항_회신.md              백엔드 90-open-questions 10개에 대한 답
-  리포트계약_최종본_전달.md              백엔드 13-report.md 확인 항목 8개에 대한 답
+  리포트계약_최종본_전달.md              노션 최종본 이후 바뀐 리포트 값
 ai/
   session_plan.py     세션 구성 로직. 검증된 파일 — 아래 예외 외에는 수정 금지
   schemas.py          계약서의 요청 · 응답 Pydantic 모델
@@ -58,7 +58,7 @@ ai/
   pipeline.py         세션 시작 · 답변 처리 흐름 — 더미/llm 분기
   router.py           /ai/* 엔드포인트, 시크릿 헤더 검증
   errors.py           에러 응답 형식
-  companies.py        회사 목록 (verified 필터)
+  companies.py        기업 인재상 — 받은 override에 추론 금지 문장 붙이기
   data/companies.json
   report_router.py    리포트 엔드포인트
   report_schemas.py   리포트 생성 계약의 요청 · 응답 모델

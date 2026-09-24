@@ -66,7 +66,7 @@ cp .env.example .env
 ```
 
 ```bash
-curl -s http://localhost:8000/ai/companies -H 'X-Cueanda-Secret: wrong'
+curl -s http://localhost:8000/ai/tasks/task_001 -H 'X-Cueanda-Secret: wrong'
 ```
 
 ```json
@@ -107,7 +107,6 @@ JSON='Content-Type: application/json'
 POST  /ai/sessions                         세션 시작
 POST  /ai/sessions/{session_id}/answers    답변 제출
 GET   /ai/tasks/{task_id}                  작업 상태 조회 (폴링)
-GET   /ai/companies                        회사 목록
 POST  /ai/sessions/{session_id}/abort      세션 중단
 GET   /health                              헬스체크 (인증 없음)
 GET   /ready                               준비 확인 (인증 없음)
@@ -241,21 +240,14 @@ curl -s -X POST $BASE/ai/sessions/sess_47d900/answers -H "$H" -H "$JSON" -d '{
 
 `total_questions`는 되묻기를 제외한 실제 질문 수이며 `question_total`과 항상 같습니다.
 
-### 6. 회사 목록
+### 6. 기업 인재상
 
-```bash
-curl -s $BASE/ai/companies -H "$H"
-```
+`GET /ai/companies`는 없습니다. **기업 데이터는 백엔드가 관리합니다.**
+세션 시작과 리포트 요청 때 인재상 텍스트를 `company_profile_override`에 담아 보내 주세요.
+`company_id`는 백엔드 PK를 문자열로 보내는 추적용 값이며 AI는 조회하지 않습니다.
 
-```json
-[
-  {"company_id":"hyundai_enc","name":"현대건설(주)","industry":"종합건설 · 플랜트"},
-  {"company_id":"kb_bank","name":"KB국민은행","industry":"은행 · 금융"}
-]
-```
-
-`verified`가 false인 회사는 AI 서버에서 걸러서 내보냅니다.
-현재 데이터에는 3사가 있고 그중 2사만 나옵니다. 데이터는
+직무 요구역량이 빠져 있으면 AI가 「추론하지 말라」는 문장을 자동으로 붙입니다.
+형식과 규칙은 질문 생성 계약 6장, 원본 데이터는
 [`ai/data/companies.json`](ai/data/companies.json)에 있습니다.
 
 ### 7. 세션 중단
