@@ -57,7 +57,6 @@ AI 서버는 내부망에 두고 외부에 노출하지 않는다.
 POST  /ai/sessions                         세션 시작
 POST  /ai/sessions/{session_id}/answers    답변 제출
 GET   /ai/tasks/{task_id}                  작업 상태 조회 (폴링)
-GET   /ai/companies                        회사 목록
 POST  /ai/sessions/{session_id}/abort      세션 중단
 
 GET   /health                              헬스체크
@@ -81,8 +80,8 @@ POST /ai/sessions
   "resume_file_url": "https://s3.../resume_abc.pdf",
   "job_role": "백엔드 개발",
   "persona": "pressure",
-  "company_id": "hyundai_enc",
-  "company_profile_override": null,
+  "company_id": "17",
+  "company_profile_override": "현대건설(주) (종합건설 · 플랜트)\n\n핵심 가치\n  도전 — ...",
   "question_count": 9,
   "retry_of_session_id": null,
   "doc_id": null
@@ -93,12 +92,12 @@ POST /ai/sessions
 resume_file_url           필수. 백엔드가 발급한 presigned URL
 job_role                  필수. 자유 문자열
 persona                   필수. "friendly" | "pressure"
-company_id                선택. null 가능 (회사 미선택 연습 모드)
-company_profile_override  선택. 미등록 기업 인재상 직접 입력값
+company_id                선택. 백엔드 기업 PK를 문자열로. 추적용이며 AI는 조회하지 않는다
+company_profile_override  선택. 지원 기업의 인재상 텍스트. 기업을 골랐으면 반드시 채운다
 question_count            선택. 3 | 6 | 9. 기본값 6
 retry_of_session_id       선택. 재연습이면 최초 세션 ID
 replay_log                재연습일 때만 필수. 최초 세션의 진행 로그
-doc_id                    선택. 이력서 파싱 결과 재사용 키
+doc_id                    선택. 이력서 파싱 캐시 키. 지금은 항상 null
 ```
 
 토픽 수는 보내지 않는다. `question_count`에서 자동으로 결정된다.
@@ -114,10 +113,7 @@ doc_id                    선택. 이력서 파싱 결과 재사용 키
 ### 예약 필드 — 지금은 항상 null
 
 ```
-company_profile_override   미등록 기업 인재상을 사용자가 직접 입력한 경우
-                           값이 있으면 company_id보다 우선한다
-
-doc_id                     이력서를 한 번 파싱한 결과의 키
+doc_id                     이력서를 한 번 파싱한 결과의 캐시 키 (RAG 인덱스가 아니다)
                            같은 이력서로 다시 면접할 때 파싱을 건너뛴다
                            null이면 resume_file_url로 새로 파싱한다
 ```
@@ -419,23 +415,37 @@ LLM이 매번 다르게 만든다.
 
 ---
 
-## 6. 회사 목록
+## 6. 기업 인재상
+
+**기업 데이터는 백엔드가 관리한다. AI 서버는 기업 목록을 갖지 않는다.**
+`GET /ai/companies`는 없다.
+
+면접 시작과 리포트 요청 때 인재상을 `company_profile_override`에 담아 보낸다.
+AI는 받은 텍스트를 질문과 리포트 코멘트에 반영할 뿐 저장하지 않는다.
 
 ```
-GET /ai/companies
+형식
+  기업명 (업종)
 
-[
-  { "company_id": "hyundai_enc", "name": "현대건설(주)", "industry": "종합건설 · 플랜트" }
-]
+  핵심 가치
+    가치 이름 — 행동지표
+    가치 이름 — 행동지표
+
+  직무 요구역량이 있으면 이어서 적는다
+    {직무} 직무 요구역량
+      요건
 ```
 
-백엔드는 이 응답을 그대로 프론트에 프록시한다.
-회사 목록을 별도로 저장하지 않는다. 원본이 두 곳에 있으면 반드시 어긋난다.
+**직무 요구역량이 없으면 AI가 「추론하지 말라」는 문장을 자동으로 붙인다.**
+백엔드는 인재상만 보내면 된다. AI는 텍스트에 「요구역량」이 들어 있는지로 판단한다.
 
-응답이 자주 바뀌지 않으므로 Redis에 5분~1시간 캐시를 두어도 된다.
+`verified`가 false인 기업은 백엔드가 서비스에 노출하지 않는다.
+공식 채용페이지에서 확인되지 않은 내용으로 질문을 만들면 틀린 정보가 나간다.
 
-`verified`가 false인 회사는 AI 서버에서 걸러서 내보낸다.
-미확인 데이터가 서비스에 노출되지 않는 것이 자동으로 보장된다.
+**`company_id`는 추적용이다.** 백엔드 `company` 테이블의 PK를 문자열로 보낸다
+(예: 17 → `"17"`). AI는 조회에 쓰지 않고 로그에만 남긴다.
+
+인재상 원본 데이터는 AI 레포 `ai/data/companies.json`에 있다.
 
 ---
 
