@@ -33,8 +33,12 @@ from ai.session_plan import (
 # 고정 응답 재료
 # ---------------------------------------------------------------------------
 
-# TTS를 붙이기 전까지 모든 질문이 이 파일 하나를 가리킨다.
-SAMPLE_AUDIO_URL = "https://cue-dummy-assets.s3.ap-northeast-2.amazonaws.com/tts/sample.mp3"
+# TTS를 켜지 않으면 질문 음성이 없다. null로 내보낸다.
+#
+# 전에는 샘플 mp3 주소를 줬는데 그 파일이 실제로 없었다(404). 주소가 있으면
+# 프론트는 재생을 시도하다 실패하고, null이면 처음부터 텍스트로 진행한다.
+# 계약서상 null은 TTS_FAILED와 같은 처리라 백엔드 · 프론트 모두 이미 다룬다.
+SAMPLE_AUDIO_URL = None
 
 # 주질문 — 카테고리 8종에 하나씩. 문장은 docs/질문 유형.md 13장에서 가져왔다.
 MAIN_QUESTIONS: dict[str, str] = {

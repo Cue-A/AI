@@ -133,7 +133,7 @@ def start_session(req: SessionCreateRequest) -> tuple[DummySession, str]:
 
 
 def _voiced_for(session: DummySession, result):
-    """질문에 음성을 붙인다. 합성이 꺼져 있으면 샘플 mp3가 그대로 나간다.
+    """질문에 음성을 붙인다. 합성이 꺼져 있으면 audio_url은 null 그대로다.
 
     실패해도 예외를 올리지 않는다. 질문 텍스트가 이미 있는데 음성 때문에
     면접을 끊는 것은 손해가 크다. 계약서 8장이 정한 규칙이다 —

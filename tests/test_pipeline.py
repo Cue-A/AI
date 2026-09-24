@@ -646,8 +646,10 @@ def test_음성_합성이_실패하면_텍스트만_나간다(client, auth, llm_
     assert first["text"], "질문 텍스트는 그대로 나가야 합니다"
 
 
-def test_USE_TTS가_꺼져_있으면_샘플_mp3가_나간다(client, auth, llm_mode, fake_llm, monkeypatch):
-    """모르는 사이에 요금이 나가면 안 된다."""
+def test_USE_TTS가_꺼져_있으면_음성은_null이다(client, auth, llm_mode, fake_llm, monkeypatch):
+    """모르는 사이에 요금이 나가면 안 된다. 없는 샘플 주소를 주면 프론트가
+    재생하다 실패하므로 null로 준다."""
     monkeypatch.delenv("USE_TTS", raising=False)
     _, first = _first_question(client, auth)
-    assert first["audio_url"] == dummy.SAMPLE_AUDIO_URL
+    assert first["audio_url"] is None
+    assert first["text"]
