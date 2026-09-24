@@ -12,7 +12,7 @@
 STT와 마찬가지로 LLM과 스위치를 분리했다. TTS는 외부 API를 호출해 요금이
 붙으므로, 켜고 끄는 것을 따로 정할 수 있어야 한다.
 
-    AI_MODE=dummy                 합성 안 함. 샘플 mp3 하나가 고정으로 나간다
+    AI_MODE=dummy                 합성 안 함. audio_url은 null
     AI_MODE=llm                   합성 안 함. 질문만 생성한다
     USE_TTS=1                     실제로 합성한다. 요금이 붙는다
 

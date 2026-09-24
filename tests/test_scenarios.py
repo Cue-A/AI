@@ -175,12 +175,14 @@ def test_시나리오_B_6문항_친절형_중간에_부실_1회(client, auth):
     assert reask["reask_of"] == "q_2"
     # 되묻기는 문항 수에 세지 않으므로 question_number가 올라가지 않는다
     assert reask["question_number"] == 2
-    # 되묻기는 category와 difficulty만 null이며 나머지 필드는 값이 온다
+    # 되묻기는 category와 difficulty가 null이며 나머지 필드는 값이 온다
+    # audio_url은 다른 질문처럼 음성이 없으면 null이다 (더미는 TTS를 켜지 않으면 null)
     assert reask["category"] is None
     assert reask["difficulty"] is None
     assert reask["is_spare_topic"] is False
     assert reask["is_replay"] is False
-    assert reask["text"] and reask["audio_url"]
+    assert reask["text"]
+    assert "audio_url" in reask
     assert reask["question_total"] == 6
 
     # 회복했으므로 예비 토픽이 투입되지 않는다

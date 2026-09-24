@@ -157,7 +157,7 @@ curl -s $BASE/ai/tasks/task_001 -H "$H"
     "question_id": "q_1",
     "reask_of": null,
     "text": "백엔드 개발 직무에 지원하신 이유를 말씀해 주세요.",
-    "audio_url": "https://cue-dummy-assets.s3.ap-northeast-2.amazonaws.com/tts/sample.mp3",
+    "audio_url": null,
     "category": "지원동기",
     "difficulty": "L1",
     "question_number": 1,
@@ -214,7 +214,7 @@ curl -s -X POST $BASE/ai/sessions/sess_47d900/answers -H "$H" -H "$JSON" -d '{
     "question_id": "q_1r",
     "reask_of": "q_1",
     "text": "어떤 내용이었는지 조금 더 자세히 말씀해 주시겠어요?",
-    "audio_url": "https://cue-dummy-assets.s3.ap-northeast-2.amazonaws.com/tts/sample.mp3",
+    "audio_url": null,
     "category": null,
     "difficulty": null,
     "question_number": 1,
@@ -327,7 +327,7 @@ AI_MODE=llm docker compose up -d        # llm   — 이력서를 읽고 주질�
 |---|---|---|
 | 주질문 | 카테고리별 고정 문장 | **이력서를 읽고 생성** |
 | 꼬리질문 · 되묻기 | 고정 문장 | 고정 문장 (STT가 붙어야 가능) |
-| 음성 | 샘플 mp3 | 샘플 mp3 (TTS 연결 전) |
+| 음성 | 없음 (null) | TTS를 켜면 실제 음성 |
 | 세션 구성 | 실제 로직 | 실제 로직 |
 | 응답 속도 | 즉시 | 세션 시작에 10~30초 |
 | 요금 | 0원 | 세션당 약 50원 |
@@ -894,9 +894,8 @@ curl -s -X POST $BASE/ai/sessions -H "$H" -H "$JSON" -d '{
 서버를 재배포하면 진행 중이던 세션이 사라져 `SESSION_NOT_FOUND`가 납니다. 버그가 아닙니다.
 개발 기간에는 재배포 전에 공유하겠습니다.
 
-**6. `audio_url`은 지금 샘플 mp3 하나를 계속 반환합니다.**
-실제 S3 URL이 아니므로 재생 테스트에는 쓸 수 없습니다.
-TTS가 붙기 전까지는 URL 형태와 null 처리 분기만 확인해 주세요.
+**6. `audio_url`은 더미에서 null입니다.**
+TTS를 켜지 않으면 음성이 없습니다. null이면 텍스트로 진행하는 분기를 확인해 주세요.
 
 ---
 
@@ -1037,7 +1036,7 @@ stage 값은 프론트에 그대로 노출하지 않는다   백엔드 enum으�
 
 ```
 LLM · STT · TTS 연결       2~3주차
-S3 업로드                  3주차. 지금 audio_url은 샘플 mp3 하나 고정
+S3 업로드                  실제 모드에서. 지금 더미의 audio_url은 null
 이력서 파싱                resume_file_url을 받기만 하고 쓰지 않습니다
 RESUME_PARSE_FAILED        위와 같은 이유로 재현 불가
 STT_FAILED · MEDIA_FETCH_FAILED   실제 분석이 붙어야 발생

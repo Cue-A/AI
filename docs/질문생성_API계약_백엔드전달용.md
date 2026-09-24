@@ -346,7 +346,8 @@ is_replay       재연습에서 1회차와 동일한 질문인가
 }
 ```
 
-되묻기는 `category`와 `difficulty`만 null이며 나머지 필드는 값이 온다.
+되묻기는 `category`와 `difficulty`가 null이며 나머지 필드는 값이 온다.
+`audio_url`은 다른 질문과 마찬가지로 음성이 없으면 null이다.
 `is_spare_topic`과 `is_replay`는 항상 false다.
 **모든 응답에 두 필드가 포함되므로 nullable 처리는 필요 없다.**
 
@@ -699,7 +700,7 @@ S3 자격증명 제공이 어려우면 AI가 base64로 반환하고
 ## 11. 개발 순서
 
 먼저 AI 서버가 더미 응답을 반환한다.
-LLM도 TTS도 Whisper도 없이 고정된 질문 텍스트와 샘플 mp3를 돌려준다.
+LLM도 TTS도 Whisper도 없이 고정된 질문 텍스트를 돌려주고, 질문 음성(`audio_url`)은 null이다.
 
 **단 세션 구성 로직은 실제로 돌린다.**
 문항 수, 난이도, 토픽 구조, 되묻기, 예비 토픽, 재연습이 전부 진짜 값으로 나오므로
