@@ -9,6 +9,7 @@ import hashlib
 import itertools
 import logging
 import os
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional
@@ -28,13 +29,11 @@ from ai.report_schemas import (
     ImprovedAnswer,
     ImprovedAnswer as _ImprovedAnswer,  # noqa: F401  (가독성용 별칭)
     Overall,
-    PartialAxes,
     QuestionScore,
     ReportAnswer,
     ReportCreateRequest,
     ReportResult,
     ReportRetryRequest,
-    ReportRetryResult,
     Resilience,
     Trend,
     TrendAxes,
@@ -431,6 +430,55 @@ def _gaze_score(row, measured: Optional[Measured]) -> Optional[int]:
     return max(0, min(100, int(_gaze_scorer()(result))))
 
 
+class ContentScoringError(Exception):
+    """실제 내용 채점이 실패했다. 리포트 전체를 CONTENT_FAILED로 끝낸다.
+
+    내용 점수가 없으면 적절성 게이트를 돌릴 수 없어 총점을 믿을 수 없다.
+    더미 점수로 채워 넣으면 틀린 총점이 정상 리포트처럼 나간다. (계약서 6장)
+    """
+
+
+# 문항별 내용 점수. 재시도 때 요청하지 않은 축은 다시 채점하지 않으려고 둔다.
+# 채점은 문항마다 Claude를 부르므로, 시선만 재시도하는데 내용을 다시 채점하면
+# 요금이 그대로 한 번 더 나간다. 서버가 재시작되면 비고, 그때는 다시 채점한다.
+_CONTENT_CACHE: "OrderedDict[tuple, int]" = OrderedDict()
+CONTENT_CACHE_MAX = 5000
+
+
+def _cached_content(key: tuple) -> Optional[int]:
+    score = _CONTENT_CACHE.get(key)
+    if score is not None:
+        _CONTENT_CACHE.move_to_end(key)
+    return score
+
+
+def _remember_content(key: tuple, score: int) -> None:
+    _CONTENT_CACHE[key] = score
+    _CONTENT_CACHE.move_to_end(key)
+    while len(_CONTENT_CACHE) > CONTENT_CACHE_MAX:
+        _CONTENT_CACHE.popitem(last=False)
+
+
+# 문항별 시선 분석 결과. 내용 채점 캐시와 같은 이유로 둔다.
+# 시선 분석은 9문항에 GPU로 약 4분이라, 말하기만 재시도하는데 다시 돌리면 안 된다.
+# 영상 주소(presigned)는 요청마다 서명이 달라서 키에 넣지 않는다.
+_GAZE_CACHE: "OrderedDict[tuple, dict]" = OrderedDict()
+
+
+def cached_gaze(session_id: str, question_id: str) -> Optional[dict]:
+    result = _GAZE_CACHE.get((session_id, question_id))
+    if result is not None:
+        _GAZE_CACHE.move_to_end((session_id, question_id))
+    return result
+
+
+def remember_gaze(session_id: str, question_id: str, result: dict) -> None:
+    _GAZE_CACHE[(session_id, question_id)] = result
+    _GAZE_CACHE.move_to_end((session_id, question_id))
+    while len(_GAZE_CACHE) > CONTENT_CACHE_MAX:
+        _GAZE_CACHE.popitem(last=False)
+
+
 def _answer_text(row, transcripts: dict[str, str], reasks=()) -> str:
     """채점할 답변 텍스트. 되묻기 답변은 원 답변 뒤에 이어 붙인다."""
     parts = [transcripts.get(row.question_id, "")]
@@ -439,11 +487,16 @@ def _answer_text(row, transcripts: dict[str, str], reasks=()) -> str:
 
 
 def _content_score(
-    session_id: str, row, transcripts: Optional[dict[str, str]], reasks=()
+    session_id: str, row, transcripts: Optional[dict[str, str]], reasks=(),
+    force: bool = False,
 ) -> Optional[int]:
     """실제 채점 결과. 채점기가 없거나 전사가 없으면 None.
 
-    None이면 부르는 쪽이 해시 더미를 쓴다.
+    None이면 부르는 쪽이 해시 더미를 쓴다. 더미 모드와 채점을 끈 경우다.
+
+    채점기가 있으면 결과는 반드시 진짜여야 한다.
+      말이 없는 답변(전사가 빔)   0점. 답한 내용이 없다
+      채점이 실패                ContentScoringError → CONTENT_FAILED
     """
     scorer = _scorer()
     if scorer is None or not transcripts:
@@ -451,16 +504,22 @@ def _content_score(
 
     text = _answer_text(row, transcripts, reasks)
     if not text:
-        return None
+        return 0
+
+    key = (session_id, row.question_id, row.text, text)
+    if not force:
+        cached = _cached_content(key)
+        if cached is not None:
+            return cached
 
     try:
-        score = int(scorer(row.text, text))
-    except Exception:
-        # 채점이 터져도 리포트 전체를 날리지는 않는다. 더미 점수로 이어간다.
-        logger.warning("내용 채점에 실패해 더미 점수를 씁니다: %s", row.question_id)
-        return None
+        score = max(0, min(100, int(scorer(row.text, text))))
+    except Exception as e:
+        logger.warning("내용 채점 실패: %s (%s)", row.question_id, type(e).__name__)
+        raise ContentScoringError(f"{row.question_id} 내용 채점에 실패했습니다") from e
 
-    return max(0, min(100, score))
+    _remember_content(key, score)
+    return score
 
 
 def _statuses(answers, measured: Optional[Measured]):
@@ -503,6 +562,7 @@ def build_report(
     req: ReportCreateRequest,
     transcripts: Optional[dict[str, str]] = None,
     measured: Optional[Measured] = None,
+    force_content: bool = False,
 ) -> ReportResult:
     rows = scored_answers(req.answers)
     extra = reasks_by_target(req.answers)
@@ -519,7 +579,9 @@ def build_report(
     per_question: dict[str, dict[str, int]] = {}
     for r in rows:
         scores = _measured_scores(session_id, r, measured)
-        real = _content_score(session_id, r, transcripts, extra.get(r.question_id, []))
+        real = _content_score(
+            session_id, r, transcripts, extra.get(r.question_id, []), force=force_content
+        )
         if real is not None:
             # 실제 채점이 붙어 있으면 더미 트리거보다 우선한다
             scores["content"] = real
@@ -630,19 +692,19 @@ def build_retry(
     req: ReportRetryRequest,
     transcripts: Optional[dict[str, str]] = None,
     measured: Optional[Measured] = None,
-) -> ReportRetryResult:
-    """요청한 축만 다시 계산해 돌려준다. 백엔드가 기존 리포트에 병합한다."""
-    rows = scored_answers(req.answers)
-    statuses = _statuses(req.answers, measured)
-    per_question = {r.question_id: _measured_scores(session_id, r, measured) for r in rows}
-    picked = {
-        a: _axis_result(
-            session_id, a, statuses[a][0], statuses[a][1], rows, per_question, measured
-        )
-        for a in req.axes
-    }
-    return ReportRetryResult(
-        session_id=session_id, generated_at=_now(), axes=PartialAxes(**picked)
+) -> ReportResult:
+    """재시도. 요청한 축을 다시 계산하고 리포트 전체를 다시 조립한다. (계약서 7장)
+
+    총점 · 게이트 · 부분 실패 여부까지 새로 계산해야 하므로 축만 돌려주지 않는다.
+    요청하지 않은 축은 첫 리포트 때의 값을 쓴다. 내용은 채점 캐시에서, 시선은
+    분석 캐시에서(report_pipeline), 말하기는 전사 캐시에서 나온다.
+    """
+    return build_report(
+        session_id,
+        req,
+        transcripts=transcripts,
+        measured=measured,
+        force_content="content" in req.axes,
     )
 
 
@@ -785,3 +847,5 @@ def remember(idempotency_key: str, task_id: str) -> None:
 
 def reset() -> None:
     IDEMPOTENCY.clear()
+    _CONTENT_CACHE.clear()
+    _GAZE_CACHE.clear()

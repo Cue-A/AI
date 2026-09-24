@@ -25,7 +25,6 @@ from ai.gaze import GazeError
 from ai.report_schemas import (
     ReportCreateRequest,
     ReportRetryRequest,
-    ReportRetryTaskDone,
     ReportTaskDone,
 )
 from ai.tasks import BackgroundTask, TaskFailed
@@ -65,12 +64,16 @@ def transcribe_all(session_id: str, rows) -> dict[str, AnswerText]:
     return out
 
 
-def analyze_gaze_all(rows) -> tuple[dict[str, dict], bool]:
+def analyze_gaze_all(
+    session_id: str, rows, force: bool = False
+) -> tuple[dict[str, dict], bool]:
     """영상이 있는 답변을 전부 시선 분석한다. ({question_id: 결과}, 실패 여부)
 
     전사와 달리 하나가 실패해도 태스크를 죽이지 않는다. 시선 실패는 부분
     리포트다. (리포트 계약 6장) 되묻기 영상은 점수에 넣지 않으므로 건너뛴다.
     USE_GAZE가 꺼져 있으면 아무것도 하지 않고, 시선 축은 더미 점수로 간다.
+
+    이미 분석한 문항은 다시 돌리지 않는다. 시선을 재시도할 때만 force로 새로 돈다.
     """
     if not gaze_mod.gaze_enabled():
         return {}, False
@@ -79,15 +82,21 @@ def analyze_gaze_all(rows) -> tuple[dict[str, dict], bool]:
     for row in report_dummy.scored_answers(rows):
         if not row.video_url:
             continue
+        cached = None if force else report_dummy.cached_gaze(session_id, row.question_id)
+        if cached is not None:
+            out[row.question_id] = cached
+            continue
         try:
-            out[row.question_id] = gaze_mod.analyze(row.video_url, row.question_id)
+            result = gaze_mod.analyze(row.video_url, row.question_id)
         except GazeError as e:
             logger.warning("시선 분석 실패 — 부분 리포트로 갑니다: %s (%s)", row.question_id, e)
             return {}, True
+        report_dummy.remember_gaze(session_id, row.question_id, result)
+        out[row.question_id] = result
     return out, False
 
 
-def _measure(task: BackgroundTask, session_id: str, answers, axes=REPORT_STAGES):
+def _measure(task: BackgroundTask, session_id: str, answers, force_gaze: bool = False):
     """전사 → 시선 분석. 리포트와 재시도가 같이 쓴다."""
     task.set_stage("transcribing")
     try:
@@ -99,33 +108,37 @@ def _measure(task: BackgroundTask, session_id: str, answers, axes=REPORT_STAGES)
         raise TaskFailed("STT_FAILED", str(e)) from e
 
     # 말하기 지표는 전사 때 B가 이미 계산했다. 단계만 지나간다.
-    if "analyzing_speech" in axes:
-        task.set_stage("analyzing_speech")
+    task.set_stage("analyzing_speech")
 
-    gaze, gaze_failed = {}, False
-    if "analyzing_gaze" in axes:
-        task.set_stage("analyzing_gaze")
-        gaze, gaze_failed = analyze_gaze_all(answers)
+    task.set_stage("analyzing_gaze")
+    gaze, gaze_failed = analyze_gaze_all(session_id, answers, force=force_gaze)
 
     transcripts = {qid: h.text for qid, h in heard.items()}
     measured = report_dummy.Measured(heard=heard, gaze=gaze, gaze_failed=gaze_failed)
     return transcripts, measured
 
 
+def _compose(task: BackgroundTask, build):
+    """내용 채점과 조립. 내용 채점이 실패하면 리포트 전체를 CONTENT_FAILED로 끝낸다.
+
+    내용 점수 없이는 적절성 게이트를 돌릴 수 없어 총점을 믿을 수 없다. (계약서 6장)
+    """
+    # 내용 채점은 조립 안에서 문항마다 부른다
+    task.set_stage("analyzing_content")
+    try:
+        result = build()
+    except report_dummy.ContentScoringError as e:
+        raise TaskFailed("CONTENT_FAILED", str(e)) from e
+    task.set_stage("composing")
+    return ReportTaskDone(status="done", result=result)
+
+
 def _build(task: BackgroundTask, session_id: str, req: ReportCreateRequest):
     """백그라운드 본체 — 전사하고 시선을 보고 리포트를 만든다."""
     transcripts, measured = _measure(task, session_id, req.answers)
-
-    # 내용 채점은 build_report 안에서 문항마다 부른다
-    task.set_stage("analyzing_content")
-
-    task.set_stage("composing")
-    return ReportTaskDone(
-        status="done",
-        result=report_dummy.build_report(
-            session_id, req, transcripts=transcripts, measured=measured
-        ),
-    )
+    return _compose(task, lambda: report_dummy.build_report(
+        session_id, req, transcripts=transcripts, measured=measured
+    ))
 
 
 def create_report(session_id: str, req: ReportCreateRequest, task_id: str) -> Optional[object]:
@@ -149,32 +162,30 @@ def create_report(session_id: str, req: ReportCreateRequest, task_id: str) -> Op
 
 
 def _build_retry(task: BackgroundTask, session_id: str, req: ReportRetryRequest):
-    """실패한 축만 다시 계산한다.
+    """요청한 축을 다시 계산하고 리포트 전체를 다시 조립한다. (계약서 7장)
 
-    전사 결과는 캐시에서 나오므로 재시도 비용이 낮다. (리포트 계약 7장)
-    시선은 캐시가 없어 gaze를 다시 요청했을 때만 분석한다.
+    요청하지 않은 축은 첫 리포트 때의 값을 쓴다. 전사 · 시선 · 내용 채점
+    모두 캐시가 있어서, 시선만 재시도하면 Claude를 다시 부르지 않고
+    말하기만 재시도하면 시선 분석을 다시 돌리지 않는다.
     """
-    stages = ("analyzing_gaze",) if "gaze" in req.axes else ()
-    transcripts, measured = _measure(task, session_id, req.answers, axes=stages)
-
-    task.set_stage("composing")
-    return ReportRetryTaskDone(
-        status="done",
-        result=report_dummy.build_retry(
-            session_id, req, transcripts=transcripts, measured=measured
-        ),
+    transcripts, measured = _measure(
+        task, session_id, req.answers, force_gaze="gaze" in req.axes
     )
+    return _compose(task, lambda: report_dummy.build_retry(
+        session_id, req, transcripts=transcripts, measured=measured
+    ))
 
 
 def create_retry(session_id: str, req: ReportRetryRequest, task_id: str) -> Optional[object]:
+    """재시도 작업을 띄운다. 응답 모양은 리포트 생성과 같다."""
     if not answers_mod.stt_enabled():
-        return ReportRetryTaskDone(
+        return ReportTaskDone(
             status="done", result=report_dummy.build_retry(session_id, req)
         )
 
     task = tasks.run(
         lambda t: _build_retry(t, session_id, req),
-        stages=("transcribing", "analyzing_gaze", "composing"),
+        stages=REPORT_STAGES,
         with_progress=True,
     )
     dummy.store_task(task_id, task)

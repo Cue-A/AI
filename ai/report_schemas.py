@@ -83,14 +83,21 @@ class ReportCreateRequest(BaseModel):
     answers: list[ReportAnswer]
 
 
-class ReportRetryRequest(BaseModel):
+class ReportRetryRequest(ReportCreateRequest):
     """POST /ai/sessions/{session_id}/report/retry 요청. 계약서 7장.
 
-    성공한 축은 다시 계산하지 않는다. 요청한 축만 담아서 돌려준다.
+    리포트 생성 요청과 같은 본문에 다시 계산할 축(axes)을 더한다.
+    응답은 생성과 같은 전체 리포트다. 백엔드는 기존 리포트를 통째로 교체한다.
+
+    축만 돌려주면 총점 · 게이트 · 부분 실패 여부가 옛 값으로 남는다.
+    그것을 다시 계산하려면 가중치와 게이트 규칙이 필요한데, 그건 AI 로직이라
+    백엔드가 따라 만들면 안 된다. 그래서 전체를 다시 조립해 준다.
+
+    요청하지 않은 축은 첫 리포트 때 계산한 값을 재사용한다(시선 분석, 내용 채점).
+    서버가 재시작돼 남은 값이 없으면 그 축도 다시 계산한다.
     """
 
     axes: list[Axis]
-    answers: list[ReportAnswer]
 
 
 class TaskAccepted(BaseModel):
@@ -234,27 +241,8 @@ class ReportTaskProcessing(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# 7. 실패한 축만 재시도
+# 7. 실패한 축만 재시도 — 응답은 리포트 생성과 같다 (ReportTaskDone)
 # ---------------------------------------------------------------------------
-
-
-class PartialAxes(BaseModel):
-    """재시도 응답 — 요청한 축만 담는다. 백엔드가 기존 리포트에 병합한다."""
-
-    content: Optional[AxisResult] = None
-    speech: Optional[AxisResult] = None
-    gaze: Optional[AxisResult] = None
-
-
-class ReportRetryResult(BaseModel):
-    session_id: str
-    generated_at: str
-    axes: PartialAxes
-
-
-class ReportRetryTaskDone(BaseModel):
-    status: Literal["done"]
-    result: ReportRetryResult
 
 
 # ---------------------------------------------------------------------------
