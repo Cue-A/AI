@@ -22,6 +22,23 @@ SECRET = os.environ["CUEANDA_SHARED_SECRET"]
 AUTH = {"X-Cueanda-Secret": SECRET}
 
 
+@pytest.fixture(autouse=True)
+def _no_real_claude(monkeypatch):
+    """테스트 중에는 어떤 경로로도 진짜 Claude를 부르지 않는다.
+
+    스위치(USE_CONTENT_SCORING, AI_MODE)만으로 막으면 새 기능이 스위치를 빠뜨렸을 때
+    API 키가 있는 컴퓨터에서 테스트마다 요금이 나간다. 클라이언트를 만드는 곳을
+    막아 두면 빠뜨려도 요금 대신 테스트 실패로 드러난다.
+    Claude를 흉내 내는 테스트는 llm._client를 직접 가짜로 바꾼다.
+    """
+    from ai import llm
+
+    def forbidden():
+        raise RuntimeError("테스트에서 진짜 Claude를 부르려 했습니다. 가짜를 꽂으세요")
+
+    monkeypatch.setattr(llm, "_client", forbidden)
+
+
 @pytest.fixture
 def client():
     from fastapi.testclient import TestClient
