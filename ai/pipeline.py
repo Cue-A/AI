@@ -144,7 +144,12 @@ def _voiced_for(session: DummySession, result):
         # 세션 종료 항목에는 질문 텍스트가 없다
         return result
 
-    url = voice.synthesize(text, session.persona)
+    url = voice.synthesize(
+        text,
+        session.persona,
+        session_id=session.session_id,
+        question_id=getattr(result, "question_id", None),
+    )
     if url:
         return result.model_copy(update={"audio_url": url})
     if voice.tts_enabled():

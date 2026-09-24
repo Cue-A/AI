@@ -1,8 +1,12 @@
 """ai/tts.py
 B 파트 — 음성 축(TTS) 핵심 모듈
 
-ai/voice.py가 부르는 진입점은 synthesize(text, persona) 하나뿐이다.
+ai/voice.py가 부르는 진입점은 synthesize(text, persona, session_id, question_id) 하나뿐이다.
 성공하면 S3에 올라간 오디오 URL(str)을, 실패하면 None을 반환한다.
+
+세션 번호와 질문 번호를 받으면 백엔드 경로 규칙
+sessions/{sessionId}/questions/{questionId}.mp3 에 올린다. 없으면 예전처럼
+임의 경로에 올리는데, 실제 S3에서는 권한 밖이라 실패한다.
 
 voice.py가 이미 ImportError / 속성 없음 / 예외 / URL 아닌 반환값까지 전부
 방어하고 있지만(tests/test_voice.py 참고), 이 파일 단독으로도 안전하도록
@@ -39,7 +43,7 @@ from typing import Optional
 
 import httpx2
 
-from infra.gaze_analysis.s3_upload import upload_audio_to_s3
+from infra.gaze_analysis.s3_upload import question_audio_key, upload_audio_to_s3
 
 logger = logging.getLogger("cue.ai.tts")
 
@@ -109,6 +113,36 @@ def _cache_set(key: str, url: str) -> None:
     os.replace(tmp_path, path)  # 원자적 쓰기
 
 
+# 합성한 음성 자체도 (text, persona) 기준으로 남긴다.
+#
+# 올리는 경로가 세션마다 달라서 URL 캐시는 세션을 넘어 재사용할 수 없다.
+# 재연습처럼 같은 문장을 다시 읽을 때 Typecast를 또 부르면 요금이 그만큼 나가므로,
+# 음성은 재사용하고 업로드만 새 경로로 한다.
+def _audio_path(key: str) -> str:
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    return os.path.join(CACHE_DIR, f"{key}.mp3")
+
+
+def _audio_get(key: str) -> Optional[bytes]:
+    path = _audio_path(key)
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+    except OSError:
+        return None
+    return data or None
+
+
+def _audio_set(key: str, data: bytes) -> None:
+    path = _audio_path(key)
+    tmp_path = path + ".tmp"
+    with open(tmp_path, "wb") as f:
+        f.write(data)
+    os.replace(tmp_path, path)
+
+
 # ---------------------------------------------------------------------------
 # Typecast 호출
 # ---------------------------------------------------------------------------
@@ -150,11 +184,17 @@ def _call_typecast(text: str, persona: str) -> bytes:
 # 진입점 — ai/voice.py가 이 함수 하나만 호출한다
 # ---------------------------------------------------------------------------
 
-def synthesize(text: str, persona: str) -> Optional[str]:
+def synthesize(
+    text: str,
+    persona: str,
+    session_id: Optional[str] = None,
+    question_id: Optional[str] = None,
+) -> Optional[str]:
     """질문 음성을 합성해 S3 URL을 반환한다. 실패하면 None.
 
     text: 합성할 문장
     persona: "friendly" 또는 "pressure" (그 외 값은 friendly로 대체하고 경고만 남김)
+    session_id · question_id: 있으면 sessions/{sessionId}/questions/{questionId}.mp3에 올린다
     """
     if not text or not text.strip():
         return None
@@ -167,19 +207,28 @@ def synthesize(text: str, persona: str) -> Optional[str]:
         logger.error("[TTS] TYPECAST_API_KEY가 설정되지 않았습니다")
         return None
 
-    key = _cache_key(text, persona)
+    audio_key = _cache_key(text, persona)
+    s3_key = question_audio_key(session_id, question_id) if session_id and question_id else None
+    # 올린 주소는 경로마다 다르다. 세션 · 질문이 있으면 그것까지 키에 넣는다
+    key = _cache_key(f"{s3_key}::{text}", persona) if s3_key else audio_key
     cached = _cache_get(key)
     if cached:
         return cached
 
-    try:
-        audio_bytes = _call_typecast(text, persona)
-    except httpx2.HTTPError as e:
-        logger.error("[TTS] Typecast 요청 실패: %s", e)
-        return None
-    except RuntimeError as e:
-        logger.error("[TTS] %s", e)
-        return None
+    audio_bytes = _audio_get(audio_key)
+    if audio_bytes is None:
+        try:
+            audio_bytes = _call_typecast(text, persona)
+        except httpx2.HTTPError as e:
+            logger.error("[TTS] Typecast 요청 실패: %s", e)
+            return None
+        except RuntimeError as e:
+            logger.error("[TTS] %s", e)
+            return None
+        try:
+            _audio_set(audio_key, audio_bytes)
+        except OSError:
+            logger.warning("[TTS] 합성한 음성을 캐시에 남기지 못했습니다")
 
     tmp_path = None
     try:
@@ -187,7 +236,7 @@ def synthesize(text: str, persona: str) -> Optional[str]:
             f.write(audio_bytes)
             tmp_path = f.name
 
-        url = upload_audio_to_s3(tmp_path)
+        url = upload_audio_to_s3(tmp_path, key=s3_key)
     except Exception as e:
         # S3_BUCKET 미설정(RuntimeError)도 여기서 걸린다 — 백엔드가 버킷을
         # 주기 전까지는 항상 이 경로로 빠져서 None을 반환하게 된다.
