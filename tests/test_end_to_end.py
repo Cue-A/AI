@@ -12,6 +12,7 @@ STT와 채점은 가짜를 꽂는다. GPU도 실제 API도 쓰지 않는다.
 """
 from unittest.mock import patch as mock_patch
 
+import time
 import pytest
 
 from ai import answers, dummy, report_dummy
@@ -62,14 +63,23 @@ def fake_scorer():
     report_dummy.CONTENT_SCORER = None
 
 
-def _poll(client, auth, task_id, limit=60):
-    for _ in range(limit):
+# 백그라운드 작업이 끝나길 기다리는 시간. 횟수로 세면 컴퓨터가 바쁠 때
+# 작업이 끝나기 전에 포기해서 테스트가 가끔 실패한다. 시간으로 센다.
+POLL_TIMEOUT_SEC = 10.0
+POLL_INTERVAL_SEC = 0.01
+
+
+def _poll(client, auth, task_id):
+    deadline = time.monotonic() + POLL_TIMEOUT_SEC
+    while True:
         res = client.get(f"/ai/tasks/{task_id}", headers=auth)
         assert res.status_code == 200, res.json()
         body = res.json()
         if body["status"] in ("done", "error"):
             return body
-    raise AssertionError("작업이 끝나지 않았습니다")
+        if time.monotonic() > deadline:
+            raise AssertionError("작업이 끝나지 않았습니다")
+        time.sleep(POLL_INTERVAL_SEC)
 
 
 def _run_session(client, auth):

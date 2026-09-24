@@ -1,7 +1,7 @@
 """리포트 생성 엔드포인트 — 리포트 계약 1장.
 
 POST  /ai/sessions/{session_id}/report          리포트 생성 요청
-POST  /ai/sessions/{session_id}/report/retry    실패한 축만 재시도
+POST  /ai/sessions/{session_id}/report/retry    실패한 축을 다시 계산해 전체 리포트를 다시 조립
 POST  /ai/reports/compare                       회차 비교 · 성장 추이
 GET   /ai/tasks/{task_id}                       질문 생성과 같은 엔드포인트를 쓴다
 
@@ -20,7 +20,6 @@ from ai.report_schemas import (
     CompareResponse,
     ReportCreateRequest,
     ReportRetryRequest,
-    ReportRetryTaskDone,
     ReportTaskDone,
     TaskAccepted,
 )

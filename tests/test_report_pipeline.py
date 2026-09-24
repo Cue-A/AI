@@ -8,6 +8,7 @@ llm 모드는 전사부터 시작한다. 전사 결과는 세션 진행 중에 �
 """
 from unittest.mock import patch as mock_patch
 
+import time
 import pytest
 
 from ai import answers, report_dummy
@@ -37,14 +38,23 @@ def fake_stt():
         yield stt
 
 
-def poll(client, auth, task_id, limit=60):
-    for _ in range(limit):
+# 백그라운드 작업이 끝나길 기다리는 시간. 횟수로 세면 컴퓨터가 바쁠 때
+# 작업이 끝나기 전에 포기해서 테스트가 가끔 실패한다. 시간으로 센다.
+POLL_TIMEOUT_SEC = 10.0
+POLL_INTERVAL_SEC = 0.01
+
+
+def poll(client, auth, task_id):
+    deadline = time.monotonic() + POLL_TIMEOUT_SEC
+    while True:
         res = client.get(f"/ai/tasks/{task_id}", headers=auth)
         assert res.status_code == 200, res.json()
         body = res.json()
         if body["status"] in ("done", "error"):
             return body
-    raise AssertionError("끝나지 않았습니다")
+        if time.monotonic() > deadline:
+            raise AssertionError("끝나지 않았습니다")
+        time.sleep(POLL_INTERVAL_SEC)
 
 
 def make(client, auth, answers_, idem=1):
@@ -173,18 +183,38 @@ def test_채점기를_꽂으면_전사_텍스트로_점수가_난다(
     assert "결제 모듈" in answer_text
 
 
-def test_채점기가_터져도_리포트는_나간다(client, auth, llm_mode, fake_stt):
-    """채점 하나 때문에 리포트 전체를 날리지 않는다."""
+def test_채점이_실패하면_CONTENT_FAILED다(client, auth, llm_mode, fake_stt):
+    """내용 점수 없이는 게이트를 돌릴 수 없다. 가짜 점수로 채우면
+    틀린 총점이 정상 리포트처럼 나간다. (계약서 6장)"""
     def boom(question_text, answer_text):
         raise RuntimeError("채점 실패")
 
     report_dummy.CONTENT_SCORER = boom
     try:
         body = make(client, auth, six_answers())
-        assert body["status"] == "done"
-        assert body["result"]["axes"]["content"]["score"] >= 50   # 더미 점수로 이어감
     finally:
         report_dummy.CONTENT_SCORER = None
+
+    assert body["status"] == "error"
+    assert body["error_code"] == "CONTENT_FAILED"
+    assert "result" not in body
+
+
+def test_말이_없는_답변은_내용_0점이다(client, auth, llm_mode):
+    """전사가 비면 답한 내용이 없는 것이다. 가짜 점수를 주면 안 된다."""
+    def silent(*, audio_url, session_id, question_id, is_timeout=False):
+        return AnswerText(duration_sec=0, word_count=0, text="")
+
+    report_dummy.CONTENT_SCORER = lambda q, a: 90
+    try:
+        with mock_patch.object(answers, "transcribe", side_effect=silent):
+            body = make(client, auth, six_answers())
+    finally:
+        report_dummy.CONTENT_SCORER = None
+
+    assert body["status"] == "done"
+    assert body["result"]["axes"]["content"]["score"] == 0
+    assert body["result"]["overall"]["gated"] is True
 
 
 def test_채점기가_없으면_더미_트리거가_그대로_돈다(client, auth, llm_mode, fake_stt):

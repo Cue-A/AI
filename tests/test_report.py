@@ -483,37 +483,69 @@ def test_리포트도_시크릿_헤더가_필요하다(client):
 # ---------------------------------------------------------------------------
 
 
-def test_재시도는_요청한_축만_돌려준다(client, auth):
+def retry_body(axes, answers, **kw):
+    """재시도 요청은 리포트 생성 본문에 axes를 더한 모양이다. (계약서 7장)"""
+    return {**report_body(answers, **kw), "axes": axes}
+
+
+def test_재시도는_전체_리포트를_돌려준다(client, auth):
+    """축만 돌려주면 총점 · 게이트 · 부분 실패 여부가 옛 값으로 남는다.
+    그걸 백엔드가 다시 계산하게 두지 않는다."""
     res = client.post(
         "/ai/sessions/sess_9f2a1c/report/retry",
         headers={**auth, **key(2)},
-        json={"axes": ["gaze"], "answers": six_answers()},
+        json=retry_body(["gaze"], six_answers()),
     )
     assert res.status_code == 202
     body = client.get(f"/ai/tasks/{res.json()['task_id']}", headers=auth).json()
     assert body["status"] == "done"
 
-    axes = body["result"]["axes"]
-    assert axes["gaze"] is not None
-    assert axes["content"] is None      # 성공한 축은 다시 계산하지 않는다
-    assert axes["speech"] is None
-    assert axes["gaze"]["status"] == "ok"
+    result = ReportResult.model_validate(body["result"])   # 생성 응답과 같은 모양
+    assert result.axes.gaze.status == "ok"
+    assert result.axes.content.score is not None
+    assert result.axes.speech.score is not None
+    assert result.overall.axes_used == ["content", "speech", "gaze"]
+    assert result.overall.partial is False
+
+
+def test_재시도로_성공하면_부분_리포트가_풀린다(client, auth):
+    answers = six_answers(video="fail")
+    first, _ = make_report(client, auth, answers, session_id="sess_p", idem=1)
+    assert first["report_status"] == "partial"
+
+    res = client.post("/ai/sessions/sess_p/report/retry", headers={**auth, **key(2)},
+                      json=retry_body(["gaze"], six_answers()))
+    retried = client.get(f"/ai/tasks/{res.json()['task_id']}", headers=auth).json()["result"]
+
+    assert retried["report_status"] == "complete"
+    assert retried["overall"]["partial"] is False
+    assert retried["overall"]["axes_failed"] == []
 
 
 def test_재시도_점수는_최초_리포트와_같다(client, auth):
-    """STT 결과가 session_id + question_id로 캐시되어 재사용된다. (계약서 7장)"""
+    """요청하지 않은 축은 다시 계산하지 않고 같은 값을 쓴다. (계약서 7장)"""
     answers = six_answers()
     first, _ = make_report(client, auth, answers, session_id="sess_x", idem=1)
 
     res = client.post("/ai/sessions/sess_x/report/retry", headers={**auth, **key(9)},
-                      json={"axes": ["content"], "answers": answers})
-    retried = client.get(f"/ai/tasks/{res.json()['task_id']}", headers=auth).json()
-    assert retried["result"]["axes"]["content"]["score"] == first["axes"]["content"]["score"]
+                      json=retry_body(["gaze"], answers))
+    retried = client.get(f"/ai/tasks/{res.json()['task_id']}", headers=auth).json()["result"]
+    for axis in ("content", "speech", "gaze"):
+        assert retried["axes"][axis]["score"] == first["axes"][axis]["score"]
+    assert retried["overall"]["score"] == first["overall"]["score"]
+
+
+def test_재시도에_생성_본문이_없으면_400(client, auth):
+    """persona · job_role이 있어야 회복력 · 기업 코멘트까지 다시 만든다."""
+    res = client.post("/ai/sessions/sess_a/report/retry", headers={**auth, **key(1)},
+                      json={"axes": ["gaze"], "answers": six_answers()})
+    assert res.status_code == 400
+    assert res.json()["error_code"] == "INVALID_REQUEST"
 
 
 def test_재시도에_축을_안_주면_400(client, auth):
     res = client.post("/ai/sessions/sess_a/report/retry", headers={**auth, **key(1)},
-                      json={"axes": [], "answers": six_answers()})
+                      json=retry_body([], six_answers()))
     assert res.status_code == 400
     assert res.json()["error_code"] == "INVALID_REQUEST"
 

@@ -112,7 +112,7 @@ GET   /health                              헬스체크 (인증 없음)
 GET   /ready                               준비 확인 (인증 없음)
 
 POST  /ai/sessions/{session_id}/report        리포트 생성   ← 아래 별도 절
-POST  /ai/sessions/{session_id}/report/retry  실패한 축 재시도
+POST  /ai/sessions/{session_id}/report/retry  실패한 축을 다시 계산해 전체 리포트
 POST  /ai/reports/compare                     회차 비교
 ```
 
@@ -534,7 +534,7 @@ retry_of_session_id는 항상 최초 세션을 가리킵니다.
 
 ```
 POST  /ai/sessions/{session_id}/report          리포트 생성 요청
-POST  /ai/sessions/{session_id}/report/retry    실패한 축만 재시도
+POST  /ai/sessions/{session_id}/report/retry    실패한 축을 다시 계산해 전체 리포트
 POST  /ai/reports/compare                       회차 비교 · 성장 추이
 GET   /ai/tasks/{task_id}                       질문 생성과 같은 엔드포인트로 폴링
 ```
@@ -745,18 +745,15 @@ speech 실패   content 0.714  gaze 0.286
 ```bash
 curl -s -X POST $BASE/ai/sessions/sess_9f2a1c/report/retry \
   -H "$H" -H "$JSON" -H 'Idempotency-Key: rpt_sess9f2a1c_02' \
-  -d '{ "axes": ["gaze"], "answers": [ ... ] }'
+  -d '{ "axes": ["gaze"], "persona": "pressure", "job_role": "백엔드 개발",
+        "answers": [ ... ] }'
 ```
 
-응답은 요청한 축만 담아 돌려줍니다. 나머지는 `null`이므로 백엔드가 기존 리포트에
-병합하면 됩니다. 점수는 최초 리포트와 같은 값이 나옵니다.
+요청은 리포트 생성 본문에 `axes`를 더한 것이고, 응답은 **리포트 생성과 같은 전체 리포트**입니다.
+기존 리포트를 통째로 교체하시면 됩니다. 총점 · 게이트 · 부분 실패 여부까지 새로 계산돼 있습니다.
 
-```json
-{ "status": "done",
-  "result": { "session_id": "sess_9f2a1c", "generated_at": "...",
-              "axes": { "content": null, "speech": null,
-                        "gaze": { "status": "ok", "score": 73 } } } }
-```
+요청하지 않은 축은 첫 리포트의 값을 그대로 씁니다. 시선만 재시도하면 Claude를 다시 부르지 않고,
+말하기만 재시도하면 시선 분석을 다시 돌리지 않습니다.
 
 ### 회차 비교
 

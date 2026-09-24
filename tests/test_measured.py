@@ -14,7 +14,7 @@ from ai.answers import AnswerText
 from ai.gaze import GazeError
 from infra.gaze_analysis.gaze_score import gaze_score
 
-from test_report import answer, key, six_answers  # noqa: F401
+from test_report import answer, key, report_body, six_answers  # noqa: F401
 from test_report_pipeline import make, poll
 
 
@@ -285,31 +285,67 @@ def test_가중치_경로가_없으면_GazeError(monkeypatch):
         gaze.analyze("https://s3.../a.mp4", "q_1")
 
 
-def test_재시도로_시선만_다시_계산한다(client, auth, llm_mode, fake_stt, fake_gaze):
+def retry(client, auth, axes, idem):
     res = client.post(
         "/ai/sessions/sess_rp/report/retry",
-        headers={**auth, **key(5)},
-        json={"axes": ["gaze"], "answers": six_answers()},
+        headers={**auth, **key(idem)},
+        json={**report_body(six_answers()), "axes": axes},
     )
-    assert res.status_code == 202
-    body = poll(client, auth, res.json()["task_id"])
+    assert res.status_code == 202, res.json()
+    return poll(client, auth, res.json()["task_id"])
+
+
+def test_재시도로_시선을_다시_분석한다(client, auth, llm_mode, fake_stt, fake_gaze):
+    make(client, auth, six_answers())
+    assert fake_gaze.call_count == 6
+
+    body = retry(client, auth, ["gaze"], idem=5)
 
     assert body["status"] == "done"
+    assert fake_gaze.call_count == 12, "시선을 재시도하면 새로 분석해야 합니다"
     good, bad = gaze_score(GAZE[1]), gaze_score(GAZE[2])
     assert body["result"]["axes"]["gaze"]["score"] == round((good + bad) / 2)
-    assert body["result"]["axes"]["speech"] is None
+    assert body["result"]["axes"]["speech"]["metrics"]["hesitation_score"] == 30
 
 
-def test_재시도로_말하기만_부르면_시선을_분석하지_않는다(
+def test_재시도로_말하기만_부르면_시선을_다시_분석하지_않는다(
     client, auth, llm_mode, fake_stt, fake_gaze
 ):
     """시선은 GPU로 몇 분 걸린다. 요청하지 않은 축에 쓰면 안 된다."""
-    res = client.post(
-        "/ai/sessions/sess_rp/report/retry",
-        headers={**auth, **key(6)},
-        json={"axes": ["speech"], "answers": six_answers()},
-    )
-    body = poll(client, auth, res.json()["task_id"])
+    first = make(client, auth, six_answers())["result"]
+    assert fake_gaze.call_count == 6
+
+    body = retry(client, auth, ["speech"], idem=6)
+
     assert body["status"] == "done"
-    assert fake_gaze.call_count == 0
-    assert body["result"]["axes"]["speech"]["metrics"]["hesitation_score"] == 30
+    assert fake_gaze.call_count == 6, "첫 리포트의 시선 결과를 재사용해야 합니다"
+    assert body["result"]["axes"]["gaze"]["score"] == first["axes"]["gaze"]["score"]
+
+
+def test_시선만_재시도하면_내용을_다시_채점하지_않는다(
+    client, auth, llm_mode, fake_stt, fake_gaze
+):
+    """내용 채점은 문항마다 Claude를 부른다. 시선 재시도로 요금이 또 나가면 안 된다."""
+    calls = []
+    report_dummy.CONTENT_SCORER = lambda q, a: calls.append(a) or 70
+    try:
+        make(client, auth, six_answers())
+        first_calls = len(calls)
+        body = retry(client, auth, ["gaze"], idem=7)
+    finally:
+        report_dummy.CONTENT_SCORER = None
+
+    assert body["status"] == "done"
+    assert first_calls == 6
+    assert len(calls) == 6, "첫 리포트의 내용 점수를 재사용해야 합니다"
+    assert body["result"]["axes"]["content"]["score"] == 70
+
+
+def test_서버가_재시작돼_캐시가_없어도_재시도는_된다(
+    client, auth, llm_mode, fake_stt, fake_gaze
+):
+    """캐시는 프로세스 메모리다. 비어 있으면 그 축도 다시 계산한다."""
+    body = retry(client, auth, ["speech"], idem=8)
+    assert body["status"] == "done"
+    assert fake_gaze.call_count == 6
+    assert body["result"]["axes"]["gaze"]["status"] == "ok"

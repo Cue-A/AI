@@ -58,7 +58,7 @@ X-Cueanda-Secret: <SHARED_SECRET>
 ```
 POST  /ai/sessions/{session_id}/report          리포트 생성 요청
 GET   /ai/tasks/{task_id}                       진행 상황 (질문 계약과 동일)
-POST  /ai/sessions/{session_id}/report/retry    실패한 축만 재시도
+POST  /ai/sessions/{session_id}/report/retry    실패한 축을 다시 계산해 전체 리포트를 다시 조립
 POST  /ai/reports/compare                       회차 비교 · 성장 추이
 ```
 
@@ -429,6 +429,10 @@ gaze 실패      남은 축으로 재정규화
 ```
 
 `result`가 아예 없다. 백엔드는 `status`를 먼저 보고 분기해야 한다.
+
+**실제 모드에서는 내용 채점(Claude 호출)이 실패하면 이렇게 나간다.**
+가짜 점수로 채우지 않는다. 채우면 게이트가 가짜 점수로 판단한 총점이 정상 리포트처럼 나간다.
+답변에 말이 전혀 없으면(전사가 비면) 실패가 아니라 그 문항의 내용 점수가 0점이다.
 `speech`·`gaze` 실패는 이와 달리 `status: done`에 `report_status: partial`로 나간다.
 
 ### 재정규화
@@ -472,19 +476,43 @@ POST /ai/sessions/{session_id}/report/retry
 Idempotency-Key: rpt_sess9f2a1c_02
 ```
 
+**요청은 리포트 생성과 같은 본문에 `axes`를 더한다.**
+
 ```json
 {
   "axes": ["gaze"],
+  "persona": "pressure",
+  "job_role": "백엔드 개발",
+  "company_id": "17",
+  "company_profile_override": "...",
   "answers": [ ... ]
 }
 ```
 
-성공한 축은 다시 계산하지 않는다.
-**STT 결과는 `session_id + question_id`로 캐시되어 재사용된다.**
-Whisper를 다시 돌리지 않으므로 재시도 비용이 낮다.
+`axes`는 다시 계산할 축이다. 부분 리포트의 `overall.axes_failed`를 그대로 넣으면 된다.
+나머지는 첫 요청 때 보낸 값과 같다. presigned URL만 새로 발급해서 넣는다.
 
-응답은 요청한 축만 담아서 돌려준다.
-백엔드가 기존 리포트에 병합한다.
+**응답은 리포트 생성과 같은 전체 리포트다.** 백엔드는 기존 리포트를 **통째로 교체**한다.
+
+축만 돌려주면 총점 · 게이트 · 부분 실패 여부(`overall`)가 옛 값으로 남는다.
+예를 들어 시선이 실패해 두 축으로 낸 총점은 시선을 다시 계산해도 그대로다.
+이걸 다시 계산하려면 가중치와 게이트 규칙이 필요한데 그건 AI 로직이라,
+AI가 전체를 다시 조립해 돌려준다.
+
+**요청하지 않은 축은 다시 계산하지 않는다.**
+
+```
+전사        session_id + question_id로 캐시. Whisper를 다시 돌리지 않는다
+시선        첫 리포트의 분석 결과를 재사용. axes에 gaze가 있을 때만 새로 분석한다
+내용 채점    첫 리포트의 점수를 재사용. Claude를 다시 부르지 않는다
+```
+
+그래서 시선만 재시도하면 요금이 나가지 않고, 말하기만 재시도하면 GPU를 쓰지 않는다.
+캐시는 AI 서버 메모리라 서버가 재시작되면 비고, 그때는 그 축도 다시 계산한다.
+결과는 같고 시간만 더 걸린다.
+
+`content`는 실패하면 리포트 전체가 `CONTENT_FAILED`로 끝나므로(6장),
+재시도보다는 리포트 생성을 새 `Idempotency-Key`로 다시 요청하는 편이 맞다.
 
 ---
 
