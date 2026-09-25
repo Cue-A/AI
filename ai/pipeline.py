@@ -9,6 +9,7 @@ AI_MODE가 dummy면 백그라운드를 타지 않고 고정 문장으로 즉시 
 재연습도 LLM을 부르지 않는다 — 1회차 주질문 텍스트를 그대로 재생하기 때문이다.
 """
 import logging
+import time
 from typing import Optional
 
 from ai import answers, companies, dummy, llm, resume, tasks, voice
@@ -28,6 +29,14 @@ SESSION_START_STAGES = ("generating", "tts")
 
 # 답변 처리는 전사부터 시작한다. (계약서 4장)
 ANSWER_STAGES = ("stt", "generating", "tts")
+
+# 주질문 생성이 실패하면 같은 작업 안에서 한 번 더 시도한다. 세션 시작을 다시
+# 부르면 session_id가 바뀌는데, 백엔드는 그 값을 WebSocket 키와 DB 세션 ID로
+# 이미 쓰고 있어서 바꿀 수 없다. 그래서 재시도는 AI가 하고 백엔드는 하지 않는다.
+#
+# 첫 시도가 이 시간보다 오래 걸렸으면 다시 시도하지 않는다. 백엔드의 세션 시작
+# 폴링 타임아웃이 90초라, 느린 시도를 두 번 하면 LLM_FAILED 대신 타임아웃이 난다.
+MAIN_QUESTION_RETRY_BUDGET_SEC = 30.0
 
 # 예비 토픽의 주질문 난이도. session_plan.levels_for_topic이 예비 토픽에는
 # 페르소나와 무관하게 L2를 주므로 그 값을 그대로 쓴다.
@@ -67,13 +76,7 @@ def _prepare(task: BackgroundTask, session: DummySession, req: SessionCreateRequ
             raise TaskFailed("RESUME_PARSE_FAILED", str(e)) from e
 
         try:
-            generated = llm.generate_main_questions(
-                resume=resume_file,
-                job_role=req.job_role,
-                persona=req.persona,
-                slots=slots,
-                company_profile=_company_profile(req),
-            )
+            generated = _generate_main_questions(req, resume_file, slots)
         except LlmError as e:
             raise TaskFailed("LLM_FAILED", str(e)) from e
 
@@ -82,6 +85,34 @@ def _prepare(task: BackgroundTask, session: DummySession, req: SessionCreateRequ
     task.set_stage("tts")
     first = session.start()
     return TaskDoneResponse(status="done", result=_voiced_for(session, first))
+
+
+def _generate_main_questions(req: SessionCreateRequest, resume_file, slots) -> dict[str, str]:
+    """주질문을 만든다. 실패하면 조건이 맞을 때 한 번만 더 시도한다.
+
+    다시 시도하지 않는 경우
+      retryable이 False   요청이나 키 문제라 다시 보내도 같다
+      첫 시도가 느렸다    두 번째까지 기다리면 세션 시작 타임아웃을 넘긴다
+    두 번째도 실패하면 그 오류를 그대로 올린다. 세션 상태는 성공한 뒤에만
+    바뀌므로 첫 시도의 실패가 남기는 것은 없다.
+    """
+    kwargs = dict(
+        resume=resume_file,
+        job_role=req.job_role,
+        persona=req.persona,
+        slots=slots,
+        company_profile=_company_profile(req),
+    )
+    started = time.monotonic()
+    try:
+        return llm.generate_main_questions(**kwargs)
+    except LlmError as e:
+        elapsed = time.monotonic() - started
+        if not e.retryable or elapsed > MAIN_QUESTION_RETRY_BUDGET_SEC:
+            raise
+        logger.warning("주질문 생성 실패 — 같은 작업에서 한 번 더 시도합니다 (%.1f초 걸림): %s",
+                       elapsed, e)
+    return llm.generate_main_questions(**kwargs)
 
 
 def _company_profile(req: SessionCreateRequest) -> Optional[str]:

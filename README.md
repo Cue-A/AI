@@ -836,7 +836,7 @@ CONTENT_FAILED   내용 분석 실패. 전체 실패   audio_url에 content_fail
 | `RESUME_PARSE_FAILED` | 422 | 이력서 파싱 실패 | 없음 |
 | `REPORT_TOO_SHORT` | 422 | 채점할 답변이 2문항 미만 | 없음. 사용자 안내 |
 | `STT_FAILED` | 500 | 음성 인식 실패 | 1회, 성공률 낮음 |
-| `LLM_FAILED` | 500 | 질문 생성 실패 | 1회 |
+| `LLM_FAILED` | 500 | 질문 생성 실패 | 세션 시작은 없음(AI가 1회 더 시도함). 답변 처리 중이면 1회 후 세션 aborted |
 | `TTS_FAILED` | 500 | 음성 합성 실패 | 없음. `audio_url` null로 진행 |
 
 > **더미가 실제로 내는 코드는 위 표에서 400 · 401 · 404 · 409 다섯 개뿐입니다.**

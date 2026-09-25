@@ -416,12 +416,47 @@ def test_API_오류는_LlmError(call):
 
 
 def test_알_수_없는_카테고리는_부르기_전에_막는다(call):
-    with pytest.raises(LlmError, match="협업"):
+    with pytest.raises(LlmError, match="협업") as exc:
         llm.generate_main_questions(
             resume=Resume(text="이력서"), job_role="x", persona="friendly",
             slots=[("협업", "L1")],   # 가운뎃점 누락
         )
     call.assert_not_called()
+    # 요청이 잘못된 것이라 다시 보내도 같다
+    assert exc.value.retryable is False
+
+
+def test_출력이_흔들려서_난_실패는_다시_시도할_수_있다(call):
+    """카테고리 누락은 모델 출력이 흔들린 것이라 다시 부르면 될 수 있다."""
+    call.return_value = fake_response(answers_for(SLOTS[:2]))
+    with pytest.raises(LlmError) as exc:
+        llm.generate_main_questions(
+            resume=Resume(text="이력서"), job_role="x", persona="friendly", slots=SLOTS
+        )
+    assert exc.value.retryable is True
+
+
+def _status_error(code: int) -> anthropic.APIStatusError:
+    request = httpx2.Request("POST", "https://x")
+    return anthropic.APIStatusError(
+        "오류", response=httpx2.Response(code, request=request), body=None
+    )
+
+
+@pytest.mark.parametrize("code, retryable", [
+    (401, False),   # 키 문제
+    (400, False),   # 요청 형식 문제
+    (429, True),    # SDK가 재시도한 뒤에도 몰렸다
+    (500, True),
+    (529, True),    # 과부하
+])
+def test_HTTP_오류는_상태_코드로_재시도_여부를_정한다(call, code, retryable):
+    call.side_effect = _status_error(code)
+    with pytest.raises(LlmError) as exc:
+        llm.generate_main_questions(
+            resume=Resume(text="이력서"), job_role="x", persona="friendly", slots=SLOTS
+        )
+    assert exc.value.retryable is retryable
 
 
 # ---------------------------------------------------------------------------
