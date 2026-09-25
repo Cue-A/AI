@@ -144,7 +144,24 @@ class GeneratedQuestions(BaseModel):
 
 
 class LlmError(Exception):
-    """질문 생성에 실패했다. LLM_FAILED로 나간다. (계약서 8장)"""
+    """질문 생성에 실패했다. LLM_FAILED로 나간다. (계약서 8장)
+
+    retryable  같은 요청을 한 번 더 보내면 성공할 수 있는가.
+               요청 자체가 잘못됐거나(알 수 없는 카테고리) 키 · 권한 · 요청 형식
+               문제(4xx)면 다시 보내도 결과가 같아 False다.
+    """
+
+    def __init__(self, message: str, *, retryable: bool = True):
+        super().__init__(message)
+        self.retryable = retryable
+
+
+# 이 상태 코드는 잠시 뒤에 다시 보내면 될 수 있다. 나머지 4xx는 요청이나 키 문제다.
+_TRANSIENT_STATUS = (408, 409, 429)
+
+
+def _retryable_status(status_code: int) -> bool:
+    return status_code >= 500 or status_code in _TRANSIENT_STATUS
 
 
 # ---------------------------------------------------------------------------
@@ -198,7 +215,7 @@ def generate_main_questions(
 
     unknown = [c for c, _ in slots if c not in CATEGORIES]
     if unknown:
-        raise LlmError(f"알 수 없는 카테고리: {unknown}")
+        raise LlmError(f"알 수 없는 카테고리: {unknown}", retryable=False)
 
     system = SYSTEM_PROMPT.format(
         difficulty_guide=DIFFICULTY_GUIDE,
@@ -222,7 +239,10 @@ def generate_main_questions(
         )
     except anthropic.APIStatusError as e:
         # SDK가 429·5xx를 이미 재시도한 뒤다. 여기까지 오면 실패로 본다.
-        raise LlmError(f"질문 생성 요청이 실패했습니다 (HTTP {e.status_code})") from e
+        raise LlmError(
+            f"질문 생성 요청이 실패했습니다 (HTTP {e.status_code})",
+            retryable=_retryable_status(e.status_code),
+        ) from e
     except anthropic.APIConnectionError as e:
         raise LlmError("질문 생성 서버에 연결하지 못했습니다") from e
 

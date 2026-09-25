@@ -304,6 +304,72 @@ def test_질문_생성이_실패하면_LLM_FAILED(client, auth, llm_mode):
     assert "result" not in body
 
 
+# ---------------------------------------------------------------------------
+# 주질문 생성 1회 재시도
+#
+# 세션 시작을 다시 부르면 session_id가 바뀌어 백엔드가 이어갈 수 없다.
+# 그래서 AI가 같은 작업 안에서 한 번 더 시도한다.
+# ---------------------------------------------------------------------------
+
+
+def _slots_filled(*, slots, **kw):
+    return {c: f"[생성됨] {c} 질문입니다." for c, _ in slots}
+
+
+def test_주질문_생성이_한_번_실패하면_같은_작업에서_다시_시도한다(client, auth, llm_mode):
+    """session_id와 task_id가 그대로라 백엔드는 아무것도 하지 않아도 된다."""
+    calls = []
+
+    def flaky(**kw):
+        calls.append(1)
+        if len(calls) == 1:
+            raise LlmError("생성되지 않은 카테고리가 있습니다")
+        return _slots_filled(**kw)
+
+    with mock_patch.object(resume, "fetch", return_value=Resume(text="이력서")) as fetch,          mock_patch.object(llm, "generate_main_questions", side_effect=flaky):
+        res = client.post("/ai/sessions", headers=auth, json=BODY)
+        body, _ = poll_until_done(client, auth, res.json()["task_id"])
+
+    assert body["status"] == "done"
+    assert body["result"]["text"].startswith("[생성됨]")
+    assert len(calls) == 2
+    # 이력서는 다시 받지 않는다
+    assert fetch.call_count == 1
+
+
+def test_두_번_다_실패하면_LLM_FAILED(client, auth, llm_mode):
+    with mock_patch.object(resume, "fetch", return_value=Resume(text="이력서")),          mock_patch.object(llm, "generate_main_questions",
+                           side_effect=LlmError("생성되지 않은 카테고리가 있습니다")) as gen:
+        res = client.post("/ai/sessions", headers=auth, json=BODY)
+        body, _ = poll_until_done(client, auth, res.json()["task_id"])
+
+    assert body["error_code"] == "LLM_FAILED"
+    assert gen.call_count == 2
+
+
+def test_다시_보내도_같은_오류면_재시도하지_않는다(client, auth, llm_mode):
+    """키 문제 같은 오류는 두 번째도 실패한다. 기다리는 시간만 늘어난다."""
+    with mock_patch.object(resume, "fetch", return_value=Resume(text="이력서")),          mock_patch.object(llm, "generate_main_questions",
+                           side_effect=LlmError("HTTP 401", retryable=False)) as gen:
+        res = client.post("/ai/sessions", headers=auth, json=BODY)
+        body, _ = poll_until_done(client, auth, res.json()["task_id"])
+
+    assert body["error_code"] == "LLM_FAILED"
+    assert gen.call_count == 1
+
+
+def test_첫_시도가_느렸으면_재시도하지_않는다(client, auth, llm_mode, monkeypatch):
+    """두 번째까지 기다리면 백엔드의 세션 시작 타임아웃(90초)을 넘긴다."""
+    monkeypatch.setattr(pipeline, "MAIN_QUESTION_RETRY_BUDGET_SEC", -1.0)
+    with mock_patch.object(resume, "fetch", return_value=Resume(text="이력서")),          mock_patch.object(llm, "generate_main_questions",
+                           side_effect=LlmError("생성되지 않은 카테고리가 있습니다")) as gen:
+        res = client.post("/ai/sessions", headers=auth, json=BODY)
+        body, _ = poll_until_done(client, auth, res.json()["task_id"])
+
+    assert body["error_code"] == "LLM_FAILED"
+    assert gen.call_count == 1
+
+
 def test_생성_중에_답변을_보내면_INVALID_QUESTION_ID(client, auth, llm_mode):
     """폴링해서 done을 받은 뒤에 답변을 보내야 한다."""
     import threading
