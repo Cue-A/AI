@@ -48,6 +48,12 @@ def extract_l2cs_gaze_warm(
     total_frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     video_duration_sec = total_frame_count / fps if fps > 0 else 0.0
 
+    # 크롬 MediaRecorder webm은 헤더 FPS가 1000(타임베이스)으로 읽힌다. 실측: 30fps
+    # 26초 영상이 FPS 1000 · 프레임 25,919로 나와 frame_idx / fps로는 마지막 프레임이
+    # 0.78초가 되고 회피 구간이 전부 1초 미만으로 걸러진다. 그래서 시각은 프레임마다
+    # 디코더가 주는 재생 시각(POS_MSEC)으로 잡고, 길이도 실제로 읽은 프레임으로 잰다.
+    last_sec = 0.0
+
     frames = []
     frame_idx = 0
     start = time.time()
@@ -56,6 +62,10 @@ def extract_l2cs_gaze_warm(
         ok, frame = cap.read()
         if not ok:
             break
+
+        pos_ms = cap.get(cv2.CAP_PROP_POS_MSEC)
+        timestamp = pos_ms / 1000 if pos_ms > 0 or frame_idx == 0 else frame_idx / fps
+        last_sec = timestamp
 
         if frame_idx % frame_skip == 0:
             try:
@@ -70,7 +80,7 @@ def extract_l2cs_gaze_warm(
 
             frames.append({
                 "frame_idx": frame_idx,
-                "timestamp": round(frame_idx / fps, 3),
+                "timestamp": round(timestamp, 3),
                 "yaw": yaw,
                 "pitch": pitch,
             })
@@ -79,6 +89,10 @@ def extract_l2cs_gaze_warm(
 
     cap.release()
     elapsed_sec = time.time() - start
+
+    # 마지막 프레임 시각 + 한 프레임 간격. 고정 30fps mp4면 frame_count / fps와 같다
+    if frame_idx > 1 and last_sec > 0:
+        video_duration_sec = last_sec + last_sec / (frame_idx - 1)
 
     return {
         "frames": frames,
