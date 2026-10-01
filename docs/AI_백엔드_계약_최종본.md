@@ -328,7 +328,7 @@ POST /ai/sessions/{session_id}/answers
 
 경로는 `session_id`와 `question_id`로 정해지므로 `audio_url`을 파싱하지 않고 경로를 직접 만들어도 됩니다.
 
-**`audio_url`이 null인 경우:** 더미 모드, TTS 꺼짐 · 실패, S3 설정 전. 이때도 에러가 아니라 `status: done`이고 질문 텍스트는 그대로 옵니다. `TTS_FAILED`는 실제로 나오지 않는 코드입니다. 프론트는 `audio_url`이 null이면 텍스트 숨김 설정이 켜져 있어도 텍스트를 보여 줘야 합니다.
+**`audio_url`이 null인 경우:** TTS 꺼짐(`USE_TTS` 미설정, 더미 모드 기본값) · 실패, S3 설정 전. 더미 모드도 TTS를 켜면 첫 질문부터 음성이 붙고, 합성하는 동안 `processing`(stage `tts`)이 잠깐 나갑니다. 이때도 에러가 아니라 `status: done`이고 질문 텍스트는 그대로 옵니다. `TTS_FAILED`는 실제로 나오지 않는 코드입니다. 프론트는 `audio_url`이 null이면 텍스트 숨김 설정이 켜져 있어도 텍스트를 보여 줘야 합니다.
 
 ---
 

@@ -142,8 +142,16 @@ def start_session(req: SessionCreateRequest) -> tuple[DummySession, str]:
     )
 
     if not llm.llm_enabled():
-        # 더미는 즉시 계산한다. DUMMY_POLL_TICKS로 processing을 흉내낼 수 있다.
-        return session, dummy.save_task(session.start())
+        if not voice.tts_enabled():
+            # 더미는 즉시 계산한다. DUMMY_POLL_TICKS로 processing을 흉내낼 수 있다.
+            return session, dummy.save_task(session.start())
+        # 합성을 켰으면 더미의 첫 질문에도 음성을 붙인다. 합성은 몇 초 걸리므로
+        # 백그라운드로 돌린다. 안 그러면 백엔드가 더미로 질문 음성을 확인할 때
+        # 첫 질문만 audio_url이 null로 간다
+        task = tasks.run(
+            lambda t: _voiced_done(t, session, session.start()), stages=("tts",)
+        )
+        return session, dummy.register_task(task)
 
     task = tasks.run(
         lambda t: _prepare(t, session, req), stages=SESSION_START_STAGES
@@ -187,6 +195,12 @@ def _voiced_for(session: DummySession, result):
         # 합성을 켰는데 실패했다. 프론트는 audio_url이 null이면 텍스트만 띄운다.
         return result.model_copy(update={"audio_url": None})
     return result
+
+
+def _voiced_done(task: BackgroundTask, session: DummySession, result) -> TaskDoneResponse:
+    """더미가 낸 결과에 음성만 붙여 done으로 낸다."""
+    task.set_stage("tts")
+    return TaskDoneResponse(status="done", result=_voiced_for(session, result))
 
 
 def _history(session: DummySession) -> list[Exchange]:
@@ -278,7 +292,16 @@ def _handle_answer(task: BackgroundTask, session: DummySession, req: AnswerSubmi
 def submit_answer(session: DummySession, req: AnswerSubmitRequest) -> str:
     """답변을 받아 다음 항목 작업을 띄운다. task_id를 준다."""
     if not answers.stt_enabled():
-        return dummy.save_task(session.answer(req.audio_url, is_timeout=req.is_timeout))
+        if not voice.tts_enabled():
+            return dummy.save_task(session.answer(req.audio_url, is_timeout=req.is_timeout))
+        # 전사 없이 합성만 켠 경우. 세션 시작과 같은 이유로 음성을 붙인다
+        task = tasks.run(
+            lambda t: _voiced_done(
+                t, session, session.answer(req.audio_url, is_timeout=req.is_timeout)
+            ),
+            stages=("tts",),
+        )
+        return dummy.register_task(task)
 
     task = tasks.run(lambda t: _handle_answer(t, session, req), stages=ANSWER_STAGES)
     return dummy.register_task(task)
