@@ -658,16 +658,25 @@ def build_report(
         ]
         company_comment = written.company_comment
         resilience = _real_resilience(req.persona, rows, per_question)
+        summary = written.summary
+        comments = written.question_comments
     else:
         improved = _improved(rows)
         company_comment = _company_comment(req)
         # 친절형은 압박 구간이 없어 산출할 수 없다
         resilience = _resilience(session_id, req.persona)
+        summary = DUMMY_SUMMARY
+        comments = {q.question_id: _dummy_question_comment(q.score) for q in questions}
+
+    questions = [
+        q.model_copy(update={"comment": comments.get(q.question_id)}) for q in questions
+    ]
 
     return ReportResult(
         session_id=session_id,
         generated_at=_now(),
         report_status="partial" if axes_failed else "complete",
+        summary=summary,
         overall=Overall(
             score=overall_score,
             display=display_of(overall_score),
@@ -772,6 +781,18 @@ def _resilience(session_id: str, persona: str) -> Optional[Resilience]:
         display=display_of(score),
         comment="압박 질문 이후 답변 길이가 줄어드는 구간이 관찰되었습니다.",
     )
+
+
+# 더미의 총평 · 문항 코멘트. 프론트가 칸 모양을 확인할 수 있게 고정 문장을 준다
+DUMMY_SUMMARY = "질문 의도는 잘 파악했지만, 경험을 수치와 근거로 뒷받침하는 연습이 필요합니다."
+
+
+def _dummy_question_comment(score: int) -> str:
+    if score >= 80:
+        return "핵심을 먼저 말하고 근거를 이어 가 흐름이 안정적이었습니다."
+    if score >= 60:
+        return "요지는 전달됐지만 구체적인 사례가 더 필요합니다."
+    return "질문에 대한 결론이 분명하게 드러나지 않았습니다."
 
 
 def _company_comment(req: ReportCreateRequest) -> Optional[str]:

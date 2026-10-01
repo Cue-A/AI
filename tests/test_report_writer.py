@@ -12,7 +12,7 @@ import pytest
 
 from ai import answers, report_dummy, report_writer
 from ai.answers import AnswerText
-from ai.report_writer import Answer, _Evidence, _Improved, _Written, locate
+from ai.report_writer import Answer, _Evidence, _Improved, _QuestionComment, _Written, locate
 
 from test_report import answer, key, report_body  # noqa: F401
 from test_report_pipeline import make, poll
@@ -168,12 +168,38 @@ def test_인재상을_안_보냈으면_기업_코멘트를_버린다():
                                call=fake(raw)).company_comment == "도전 정신이 드러났습니다."
 
 
+def test_총평과_문항_코멘트를_검증해서_담는다():
+    """되묻기 번호로 온 코멘트는 원 문항에 붙이고, 없는 문항 · 중복 · 빈 문장은 버린다."""
+    reask = ans(qid="q_1r", text=REASK_TEXT, words=REASK_WORDS)
+    raw = _Written(
+        summary="  역할은 분명했지만 성과 수치가 부족했습니다.  ",
+        question_comments=[
+            _QuestionComment(question_id="q_1r", comment="되묻기에서 기준을 보충했습니다."),
+            _QuestionComment(question_id="q_1", comment="같은 문항 두 번째 코멘트"),
+            _QuestionComment(question_id="q_2", comment="  "),
+            _QuestionComment(question_id="q_9", comment="없는 문항"),
+        ],
+        evidence=[], improved_answers=[],
+    )
+    out = report_writer.write("s", "friendly", "백엔드", None,
+                              [ans(reasks=[reask]), ans(qid="q_2")], call=fake(raw))
+    assert out.summary == "역할은 분명했지만 성과 수치가 부족했습니다."
+    assert out.question_comments == {"q_1": "되묻기에서 기준을 보충했습니다."}
+
+
+def test_총평을_안_주면_null이다():
+    out = report_writer.write("s", "friendly", "백엔드", None, [ans()],
+                              call=fake(_Written(evidence=[], improved_answers=[])))
+    assert out.summary is None and out.question_comments == {}
+
+
 def test_Claude가_실패해도_예외를_올리지_않는다():
     def boom(system, user):
         raise RuntimeError("API 장애")
 
     out = report_writer.write("s", "friendly", "백엔드", None, [ans()], call=boom)
     assert out.evidence == [] and out.improved_answers == [] and out.company_comment is None
+    assert out.summary is None and out.question_comments == {}
 
 
 def test_같은_입력이면_다시_부르지_않는다():
@@ -218,6 +244,9 @@ def writer():
         improved_answers=[_Improved(question_id="q_2", quote="결제 모듈을 맡았습니다",
                                     suggestion="맡은 범위를 구체적으로 말해 보세요.")],
         company_comment="도전 정신이 드러났습니다.",
+        summary="역할은 분명했지만 성과 수치가 부족했습니다.",
+        question_comments=[_QuestionComment(question_id="q_1", comment="해결 방법을 구체적으로 말했습니다."),
+                           _QuestionComment(question_id="q_2", comment="맡은 범위가 모호했습니다.")],
     )
     call = fake(raw)
     report_dummy.WRITER_CALL = call
@@ -247,6 +276,10 @@ def test_리포트에_실제_코멘트가_들어간다(client, auth, llm_mode, s
     assert imp["original_excerpt"] == "결제 모듈을 맡았습니다"
     assert "(더미)" not in imp["original_excerpt"]
     assert result["company_comment"] == "도전 정신이 드러났습니다."
+    assert result["summary"] == "역할은 분명했지만 성과 수치가 부족했습니다."
+    comments = {q["question_id"]: q["comment"] for q in result["questions"]}
+    assert comments == {"q_1": "해결 방법을 구체적으로 말했습니다.",
+                        "q_2": "맡은 범위가 모호했습니다.", "q_3": None, "q_4": None}
     assert len(writer.calls) == 1
 
 
@@ -267,12 +300,17 @@ def test_코멘트_생성이_실패해도_리포트는_나간다(client, auth, l
     assert result["axes"]["content"]["score"] == 70
     assert result["axes"]["content"]["evidence"] == []      # 가짜 문장 대신 빈 칸
     assert result["improved_answers"] == []
+    assert result["summary"] is None
+    assert all(q["comment"] is None for q in result["questions"])
 
 
 def test_더미_모드는_고정_문장_그대로다(client, auth):
     """백엔드가 검증 중인 더미 응답은 바뀌면 안 된다."""
     result = make(client, auth, rows_with_followups())["result"]
     assert result["improved_answers"][0]["original_excerpt"] == "(더미) 답변 일부 발췌"
+    # 총평 · 문항 코멘트도 고정 문장으로 채워 프론트가 칸 모양을 확인할 수 있게 한다
+    assert result["summary"] == report_dummy.DUMMY_SUMMARY
+    assert all(q["comment"] for q in result["questions"])
 
 
 def test_요금_스위치가_꺼져_있으면_코멘트를_만들지_않는다(client, auth, llm_mode, stt_with_words):

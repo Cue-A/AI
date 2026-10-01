@@ -197,6 +197,7 @@ class QuestionScore(BaseModel):
     word_count: int
     was_timeout: bool
     had_reask: bool
+    comment: Optional[str] = None      # 문항 한 줄 코멘트. 생성 실패면 null
 
 
 class Resilience(BaseModel):
@@ -219,6 +220,7 @@ class ReportResult(BaseModel):
     session_id: str
     generated_at: str                     # ISO8601 UTC, 예: 2026-09-05T14:22:31Z
     report_status: ReportStatus
+    summary: Optional[str] = None         # 한 줄 총평. 생성 실패면 null
     overall: Overall
     axes: Axes
     questions: list[QuestionScore]
