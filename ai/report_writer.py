@@ -1,8 +1,10 @@
-"""리포트의 글 칸을 채운다 — 내용 근거 · 개선 답변 · 기업 코멘트.
+"""리포트의 글 칸을 채운다 — 총평 · 문항 코멘트 · 내용 근거 · 개선 답변 · 기업 코멘트.
 
 점수는 이미 나와 있다(내용 · 말하기 · 시선). 여기서는 그 점수와 답변 전사를 보고
 사용자가 읽을 문장을 만든다. Claude를 리포트당 **한 번만** 부른다.
 
+    총평           면접 전체 한 줄. 리포트 화면 맨 위
+    문항 코멘트    문항마다 한 줄. 화면의 「면접 흐름」 줄
     내용 근거      문항마다 강점 · 약점. 답변에서 그대로 따온 구절과 함께
     개선 답변      내용 점수가 낮은 문항 최대 2개. 무엇을 더하면 좋은지
     기업 코멘트    인재상을 보냈을 때만. 인재상에 비춰 드러난 것과 부족한 것
@@ -69,7 +71,16 @@ class _Improved(BaseModel):
     suggestion: str = Field(description="무엇을 더하거나 바꾸면 좋은지 1~2문장. 존댓말")
 
 
+class _QuestionComment(BaseModel):
+    question_id: str
+    comment: str = Field(description="이 문항 답변이 어땠는지 한 문장. 존댓말")
+
+
 class _Written(BaseModel):
+    summary: Optional[str] = Field(
+        default=None, description="면접 전체 총평 한 문장. 존댓말"
+    )
+    question_comments: list[_QuestionComment] = Field(default_factory=list)
     evidence: list[_Evidence]
     improved_answers: list[_Improved]
     company_comment: Optional[str] = Field(
@@ -93,6 +104,8 @@ class Placed:
 
 @dataclass
 class Written:
+    summary: Optional[str] = None
+    question_comments: dict = field(default_factory=dict)  # {원 문항 question_id: 한 줄}
     evidence: list = field(default_factory=list)          # [Placed]
     improved_answers: list = field(default_factory=list)  # [Placed]
     company_comment: Optional[str] = None
@@ -107,6 +120,10 @@ SYSTEM_PROMPT = """당신은 모의면접 리포트의 코멘트를 씁니다.
 답변을 읽고, 답변자가 다음 면접에서 바로 고칠 수 있게 짚어 줍니다.
 
 규칙
+- summary는 면접 전체 총평 한 문장입니다. 가장 두드러진 강점과 먼저 고칠 점을 함께 담습니다.
+  점수 숫자는 다시 말하지 않습니다.
+- question_comments는 주질문 · 꼬리질문마다 정확히 하나, 한 문장입니다. 되묻기 답변은
+  원 질문에 합쳐서 봅니다. question_id는 원 질문 번호를 씁니다.
 - quote는 답변 전사에서 **글자 그대로 복사**합니다. 띄어쓰기 · 조사 · 어미까지 같아야 합니다.
   요약하거나 다듬으면 안 됩니다. 되묻기 답변에서 따와도 됩니다.
 - 답변에 없는 경험 · 수치 · 사실을 지어내지 않습니다.
@@ -219,12 +236,23 @@ def _call_claude(system: str, user: str) -> _Written:
 def _place(raw: _Written, answers: list[Answer], company_profile: Optional[str]) -> Written:
     """Claude 결과를 믿지 않고 하나씩 확인한다.
 
+    총평          비어 있으면 null
+    문항 코멘트    없는 문항은 버린다. 되묻기 번호로 오면 원 문항에 붙인다. 문항당 하나
     evidence      문항이 없으면 버린다. 구절을 못 찾으면 답변 전체 구간으로 둔다
     개선 답변      구절을 못 찾으면 버린다. 사용자가 자기 말로 읽는 부분이라 지어내면 안 된다
     기업 코멘트    인재상을 안 보냈으면 무시한다
     """
     by_id = {a.question_id: a for a in answers}
     out = Written()
+
+    if raw.summary and raw.summary.strip():
+        out.summary = raw.summary.strip()
+
+    for c in raw.question_comments:
+        owner = by_id.get(c.question_id) or _owner_of(c.question_id, answers)
+        if owner is None or not c.comment.strip() or owner.question_id in out.question_comments:
+            continue   # 없는 문항이거나 이미 받은 문항은 버린다
+        out.question_comments[owner.question_id] = c.comment.strip()
 
     per_question: dict[str, int] = {}
     for e in raw.evidence:

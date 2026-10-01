@@ -495,6 +495,7 @@ FAILED 리포트가 있는 세션도 다시 요청할 수 있어야 합니다.
     "session_id": "sess_9f2a1c",
     "generated_at": "2026-09-05T14:22:31Z",
     "report_status": "partial",
+    "summary": "역할과 해결 과정은 분명했지만, 선택 근거와 성과 수치를 보완하면 좋겠습니다.",
     "overall": {
       "score": 68, "display": 4, "gated": false, "gate_reason": null,
       "partial": true, "axes_used": ["content", "speech"], "axes_failed": ["gaze"]
@@ -514,7 +515,8 @@ FAILED 리포트가 있는 세션도 다시 요청할 수 있어야 합니다.
         "is_replay": false, "is_spare_topic": false, "score": 70, "display": 4,
         "axes": { "content": 74, "speech": 63, "gaze": null },
         "transcript": "저는 데이터가 쌓이고 흐르는 구조에...", "duration_sec": 46.2,
-        "word_count": 138, "was_timeout": false, "had_reask": true }
+        "word_count": 138, "was_timeout": false, "had_reask": true,
+        "comment": "지원 동기를 경험과 연결했지만 결론이 늦게 나왔습니다." }
     ],
     "resilience": { "score": 58, "display": 3, "comment": "..." },
     "company_comment": "도전과 협업을 강조하는 인재상에 비추어...",
@@ -563,6 +565,8 @@ FAILED 리포트가 있는 세션도 다시 요청할 수 있어야 합니다.
 
 | 필드 | 규칙 |
 | --- | --- |
+| `summary` | 한 줄 총평. 리포트 화면 맨 위. 강점과 먼저 고칠 점을 한 문장으로 |
+| `questions[].comment` | 문항별 한 줄 코멘트. 화면의 「면접 흐름」 줄. 되묻기 답변은 원 문항에 합쳐서 봄. 생성 결과에 없는 문항은 null |
 | `axes.*.evidence[]` | `question_id`, `t_start` · `t_end`(그 답변 오디오 기준 초), `kind`(`strength` · `weakness`), `label`(배지용 짧은 이름), `comment`. 내용은 답변 원문 인용 근거, 시선은 시선 회피 구간, 말하기는 지금 빈 배열 |
 | `improved_answers[]` | 내용 점수가 낮은 문항 최대 2개. `original_excerpt`는 전사에 실제로 있는 구절. 모두 잘 답했거나 생성 실패면 빈 배열 |
 | `company_comment` | 인재상(`company_profile_override`)이 없으면 null. 생성 실패도 null |
@@ -581,7 +585,7 @@ FAILED 리포트가 있는 세션도 다시 요청할 수 있어야 합니다.
 
 ### `questions[]`
 
-문항별 `score` · `display` · 축별 점수(`axes`, 실패 · 미사용 축은 null), `transcript`, `duration_sec`, `word_count`, `was_timeout`, `had_reask`. 되묻기는 따로 나오지 않고 원 질문에 합쳐지며 `had_reask: true`가 됩니다.
+문항별 `score` · `display` · 축별 점수(`axes`, 실패 · 미사용 축은 null), `transcript`, `duration_sec`, `word_count`, `was_timeout`, `had_reask`, `comment`(한 줄 코멘트, 없으면 null). 되묻기는 따로 나오지 않고 원 질문에 합쳐지며 `had_reask: true`가 됩니다.
 
 ---
 
@@ -724,6 +728,7 @@ URL은 만료되므로 저장하지 않고 **object key를 저장해 요청할 �
 | 회복력 산출식 미정 | 확정 (13장) |
 | 축 가중치 미정 | 확정 0.5 · 0.25 · 0.25 |
 | 회차 비교 필터 `is_spare_topic` 포함 | `is_replay`만 |
+| 총평 · 문항 코멘트 없음 | `summary`, `questions[].comment` 추가 (2026-10-01). 기존 필드는 그대로라 저장 방식 변경 없음 |
 
 ---
 
