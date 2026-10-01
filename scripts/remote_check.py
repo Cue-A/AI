@@ -150,9 +150,15 @@ def flow(args):
     for qs in res["questions"]:
         print(f"  {qs['question_id']} {qs['score']}점 {qs['duration_sec']}초 {qs['word_count']}어절 "
               f"전사: {qs['transcript'][:60]}")
+        print(f"      코멘트: {qs.get('comment')}")
+    print("  총평:", res.get("summary"))
     print("  회복력:", res.get("resilience"))
     print("  기업 코멘트:", res.get("company_comment"))
     print("  개선 답변:", len(res.get("improved_answers") or []), "개")
+    for imp in res.get("improved_answers") or []:
+        print(f"    {imp['question_id']} 「{imp['original_excerpt']}」 → {imp['suggestion']}")
+    for ev in res["axes"]["content"].get("evidence") or []:
+        print(f"    근거 {ev['question_id']} {ev['kind']} [{ev['label']}] {ev['comment']}")
 
 
 def main():
