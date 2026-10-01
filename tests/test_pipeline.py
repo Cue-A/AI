@@ -722,6 +722,31 @@ def test_음성_합성이_실패하면_텍스트만_나간다(client, auth, llm_
     assert first["text"], "질문 텍스트는 그대로 나가야 합니다"
 
 
+def test_더미_모드도_USE_TTS를_켜면_첫_질문부터_음성이_붙는다(client, auth, fake_tts, monkeypatch):
+    """백엔드는 더미로 질문 음성 재생을 확인한다. 첫 질문만 null이면 헷갈린다."""
+    monkeypatch.delenv("AI_MODE", raising=False)
+    monkeypatch.delenv("USE_STT", raising=False)
+
+    sid, first = _first_question(client, auth)
+    assert first["audio_url"] == "https://s3.../tts/1.mp3"
+    assert fake_tts[0][0] == first["text"]
+
+    body, _ = _answer(client, auth, sid, first)
+    assert body["result"]["audio_url"] == "https://s3.../tts/2.mp3"
+
+
+def test_더미_모드에서_USE_TTS가_꺼져_있으면_합성하지_않는다(client, auth, fake_tts, monkeypatch):
+    monkeypatch.delenv("AI_MODE", raising=False)
+    monkeypatch.delenv("USE_TTS", raising=False)
+
+    sid, first = _first_question(client, auth)
+    body, _ = _answer(client, auth, sid, first)
+
+    assert first["audio_url"] is None
+    assert body["result"]["audio_url"] is None
+    assert fake_tts == []
+
+
 def test_USE_TTS가_꺼져_있으면_음성은_null이다(client, auth, llm_mode, fake_llm, monkeypatch):
     """모르는 사이에 요금이 나가면 안 된다. 없는 샘플 주소를 주면 프론트가
     재생하다 실패하므로 null로 준다."""
