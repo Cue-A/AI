@@ -59,13 +59,16 @@ def metrics(segments, duration):
     return m
 
 
-def compare(name, audio):
+def compare(name, audio, expect_silence=False):
     before = metrics(*transcribe_before(audio))
     after = metrics(*transcribe_after(audio))
 
     warns = []
     bw, aw = before["word_count"], after["word_count"]
-    if bw > 0 and (bw - aw) / bw > WORD_DROP_WARN:
+    if expect_silence:
+        if aw > 0:
+            warns.append("무음인데 전사가 남음")
+    elif bw > 0 and (bw - aw) / bw > WORD_DROP_WARN:
         warns.append(f"어절 {bw}→{aw} 감소 (VAD가 말을 잘랐을 수 있음)")
     dh = after["hesitation_score"] - before["hesitation_score"]
     if aw > 0 and abs(dh) > HESITATION_DIFF_WARN:
@@ -98,11 +101,7 @@ def main():
     if args.silence_sec > 0:
         rng = np.random.default_rng(0)
         noise = rng.normal(0, 0.003, int(SAMPLE_RATE * args.silence_sec)).astype(np.float32)
-        r = compare(f"합성 무음 {args.silence_sec:.0f}초 (약한 잡음)", noise)
-        if not r["after"]["no_speech"]:
-            r["warns"].append("무음인데 전사가 남음")
-            print("  ⚠ 무음인데 전사가 남음")
-        results.append(r)
+        results.append(compare(f"합성 무음 {args.silence_sec:.0f}초 (약한 잡음)", noise, expect_silence=True))
 
     for path in args.files:
         audio = decode_audio(path, sampling_rate=SAMPLE_RATE)

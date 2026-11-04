@@ -118,3 +118,63 @@ def test_말한_문항은_기존_변환식을_그대로_쓴다():
 def test_측정값이_없으면_기존처럼_더미_점수로_넘긴다():
     row = W(question_id="q_2")
     assert _speech_score(row, None) is None
+
+
+# ---------------------------------------------------------------------------
+# 필러 처리 — Whisper가 "음.."을 지우든 받아쓰든 같은 점수
+# VAD 비교에서 q3_short의 머뭇거림이 26.4 → 16.5로 흔들린 문제 (중간 "음.."이 단어로 잡힘)
+# ---------------------------------------------------------------------------
+
+def _q3_like(with_filler: bool):
+    """'좋은 개발자가 되고 싶습니다. 실력도 키우고 싶고 (음..) 그렇습니다. 감사합니다.'"""
+    first = _seg(" 좋은 개발자가 되고 싶습니다. 실력도 키우고 싶고",
+                 [(" 좋은", 0.5, 0.8), (" 개발자가", 0.9, 1.4), (" 되고", 1.5, 1.7), (" 싶습니다.", 1.8, 2.3),
+                  (" 실력도", 2.6, 3.0), (" 키우고", 3.1, 3.5), (" 싶고", 3.6, 3.9)])
+    filler = _seg(" 음..", [(" 음..", 4.6, 5.3)])
+    last = _seg(" 그렇습니다. 감사합니다.", [(" 그렇습니다.", 6.2, 6.8), (" 감사합니다.", 7.0, 7.6)])
+    return [first, filler, last] if with_filler else [first, last]
+
+
+def _hesitation(segments, duration=8.0):
+    sm = stt.compute_speech_metrics(segments)
+    em = stt.compute_ending_metrics(sm["text"], segments, duration)
+    fm = stt.compute_fluency_metrics(segments, sm["silence_segments"], sm["speech_duration_sec"])
+    return sm, em, fm
+
+
+def test_필러를_받아써도_지운_것과_같은_지표가_나온다():
+    sm_a, em_a, fm_a = _hesitation(_q3_like(with_filler=False))
+    sm_b, em_b, fm_b = _hesitation(_q3_like(with_filler=True))
+
+    assert sm_a["word_count"] == sm_b["word_count"] == 9
+    assert sm_a["silence_segments"] == sm_b["silence_segments"]
+    assert sm_b["silence_total_sec"] == 2.3  # 3.9 → 6.2, 필러 시간이 침묵으로 들어감
+    assert fm_a == fm_b
+    assert em_a == em_b
+    assert sm_b["text"].count("음") == 1  # 전사 텍스트에는 그대로 남는다
+
+
+def test_필러_반복은_반복_횟수로_세지_않는다():
+    segs = [_seg(" 음 음 저는", [(" 음", 0, 0.3), (" 음", 0.4, 0.7), (" 저는", 0.8, 1.2)])]
+    assert stt.compute_fluency_metrics(segs, [], 1.2)["repetition_count"] == 0
+
+
+def test_끝에_붙은_필러는_종결_판정에서_뺀다():
+    segs = [_seg(" 열심히 하겠습니다. 음..", [(" 열심히", 0, 0.5), (" 하겠습니다.", 0.6, 1.4), (" 음..", 2.0, 2.6)])]
+    em = stt.compute_ending_metrics(" 열심히 하겠습니다. 음..", segs, 3.0)
+    assert em["is_concluded"] is True
+    assert em["trailing_silence_sec"] == 1.6  # 마지막 실제 단어(1.4초) 뒤부터
+
+
+def test_필러로_보지_않는_말():
+    for token in ["그", "저는", "음식", "어디", "아니요", "에너지", "네"]:
+        assert not stt._is_filler(token), token
+    for token in ["음", "음..", "어,", "으음", "흠", "아."]:
+        assert stt._is_filler(token), token
+
+
+def test_필러만_말한_답변은_무응답으로_본다():
+    segs = [_seg(" 음... 어...", [(" 음...", 1, 2), (" 어...", 5, 6)])]
+    sm = stt.compute_speech_metrics(segs)
+    assert sm["word_count"] == 0
+    assert stt.speech_score({**sm, "no_speech": sm["word_count"] == 0}) == 0

@@ -14,6 +14,7 @@ process_answer() 하나만 호출하면 된다.
 """
 
 import os
+import re
 import json
 from typing import TYPE_CHECKING
 
@@ -58,6 +59,14 @@ STT_VAD = os.environ.get("STT_VAD", "1") != "0"
 STT_VAD_THRESHOLD = float(os.environ.get("STT_VAD_THRESHOLD", "0.5"))
 # 목소리 구간 앞뒤로 남겨두는 여유(ms). 말 첫머리·끝머리가 잘리지 않게 한다.
 STT_VAD_SPEECH_PAD_MS = int(os.environ.get("STT_VAD_SPEECH_PAD_MS", "400"))
+
+# 필러 토큰. 머뭇거림 지표는 "Whisper가 필러를 지우고, 그 시간은 단어 사이 침묵에
+# 들어간다"는 전제로 설계했다. 그런데 Whisper가 필러를 가끔 "음.."처럼 받아쓰면
+# 같은 머뭇거림이 침묵이 아니라 단어로 잡혀 점수가 흔들린다 (VAD 비교에서 q3_short
+# 머뭇거림이 26.4 → 16.5). 그래서 필러 토큰은 단어로 치지 않고 침묵으로 계산한다.
+# 문장부호를 뗀 뒤 이 음절로만 이루어진 토큰만 필러로 본다. "그", "저" 같은
+# 뜻이 있는 말은 넣지 않는다 ("그 프로젝트", "저는"이 지워지면 안 되므로).
+FILLER_RE = re.compile(r"^(음|엄|흠|어|으|에|아)+$")
 
 # 이 문구들"만"으로 이루어진 전사는 환각으로 보고 빈 답변 처리한다.
 # 실제 답변 끝의 "감사합니다"는 다른 내용과 함께 나오므로 지워지지 않는다.
@@ -166,12 +175,27 @@ def _drop_hallucinated_segments(segments: list) -> list:
 # (발화시간·어절수는 A의 길이 게이트에도 쓰이므로 우선순위 높음)
 # ---------------------------------------------------------------------------
 
+def _is_filler(token: str) -> bool:
+    """'음', '어..', '음음' 처럼 필러 음절로만 이루어진 토큰인가."""
+    core = _normalize_for_phrase_check(token or "")
+    return bool(core) and FILLER_RE.match(core) is not None
+
+
+def _content_words(segments) -> list:
+    """필러를 뺀 단어 객체 목록. 침묵·종결·유창성 계산이 공통으로 쓴다."""
+    return [
+        w for seg in segments for w in seg.words
+        if not _is_filler(getattr(w, "word", "") or "")
+    ]
+
+
 def compute_speech_metrics(segments, silence_threshold: float = SILENCE_THRESHOLD) -> dict:
     full_text = " ".join(seg.text for seg in segments).strip()
-    word_times = [(float(w.start), float(w.end)) for seg in segments for w in seg.words]
+    # 필러는 단어로 치지 않는다. 필러가 차지한 시간은 앞뒤 단어 사이 간격, 즉 침묵에 들어간다.
+    word_times = [(float(w.start), float(w.end)) for w in _content_words(segments)]
 
     speech_duration = (word_times[-1][1] - word_times[0][0]) if word_times else 0.0
-    word_count = len(full_text.split())
+    word_count = sum(1 for tok in full_text.split() if not _is_filler(tok))
 
     silences = [
         {
@@ -209,10 +233,15 @@ def compute_speech_metrics(segments, silence_threshold: float = SILENCE_THRESHOL
 def compute_ending_metrics(full_text: str, segments, audio_duration: float) -> dict:
     text_stripped = full_text.strip()
     # Whisper가 붙이거나 안 붙이거나 하는 문장부호는 종결 판정에서 무시한다.
-    text_for_ending_check = text_stripped.rstrip(".!?~…‥ ")
+    # 끝에 붙은 필러("…그렇습니다 음..")는 종결 판정에서 빼고 본다.
+    tokens = text_stripped.split()
+    while tokens and _is_filler(tokens[-1]):
+        tokens.pop()
+    text_for_ending_check = " ".join(tokens).rstrip(".!?~…‥ ")
     is_concluded = bool(any(text_for_ending_check.endswith(p) for p in ENDING_PATTERNS))
 
-    all_words = [w for seg in segments for w in seg.words]
+    # 마지막 필러 뒤가 아니라 마지막 실제 단어 뒤부터를 끝 침묵으로 본다.
+    all_words = _content_words(segments)
     last_word_end = float(all_words[-1].end) if all_words else 0.0
     trailing_silence = float(audio_duration) - last_word_end
 
@@ -256,7 +285,8 @@ def _extract_words(segments):
     for seg in segments:
         for w in seg.words:
             text = w.word.strip()
-            if text:
+            # 필러는 빼야 "음 음"이 반복으로 잡히지 않고, 필러 시간이 침묵 쪽에 남는다
+            if text and not _is_filler(text):
                 words.append((text, float(w.start), float(w.end)))
     return words
 
