@@ -53,7 +53,7 @@ class GazeMetrics:
 
 
 def _detect_raw_dips(frames: list[dict], yaw_threshold: float) -> list[tuple[float, float]]:
-    """yaw가 threshold 밑으로 떨어지는 연속 구간(시작~끝)을 찾는다. 드롭아웃 프레임은 건너뛴다."""
+    """|yaw|가 threshold를 넘는 연속 구간(좌우 양쪽)(시작~끝)을 찾는다. 드롭아웃 프레임은 건너뛴다."""
     windows = []
     in_dip = False
     start_t = None
@@ -63,7 +63,7 @@ def _detect_raw_dips(frames: list[dict], yaw_threshold: float) -> list[tuple[flo
         if f["yaw"] is None:
             continue  # 드롭아웃은 판정에서 제외
         t = f["timestamp"]
-        below = f["yaw"] < yaw_threshold
+        below = abs(f["yaw"]) > abs(yaw_threshold)  # 좌우 양쪽 판정
 
         if below and not in_dip:
             in_dip = True
