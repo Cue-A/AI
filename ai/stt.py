@@ -41,6 +41,27 @@ SPEECH_SILENT_ENDING_PENALTY = 7  # 거기에 더해 끝에 긴 침묵까지 있
 # 배포 환경마다 다를 수 있어서 환경변수로 오버라이드 가능하게 해둠.
 CACHE_DIR = os.environ.get("STT_CACHE_DIR", "./stt_cache")
 
+# 무음 환각 방지 설정.
+# Whisper는 무음·잡음만 있는 오디오를 "감사합니다", "시청해 주셔서 감사합니다" 같은
+# 문장으로 채우는 경우가 있다 (학습 데이터의 영상 자막 영향). 11/3 실서비스 테스트에서
+# 60초 동안 아무 말도 안 한 답변이 "감사합니다." x4로 전사되어 내용 평가가 잘못된 것을 확인.
+# 세그먼트 신뢰도 기준은 Whisper 원본의 무음 판정 규칙(no_speech > 0.6 이면서
+# avg_logprob < -1.0)과 같은 값을 쓴다.
+NO_SPEECH_PROB_THRESHOLD = 0.6
+AVG_LOGPROB_THRESHOLD = -1.0
+
+# 이 문구들"만"으로 이루어진 전사는 환각으로 보고 빈 답변 처리한다.
+# 실제 답변 끝의 "감사합니다"는 다른 내용과 함께 나오므로 지워지지 않는다.
+HALLUCINATION_PHRASES = [
+    "시청해주셔서감사합니다",
+    "시청해주셔서고맙습니다",
+    "구독과좋아요부탁드립니다",
+    "구독과좋아요",
+    "다음영상에서만나요",
+    "감사합니다",
+    "고맙습니다",
+]
+
 
 # ---------------------------------------------------------------------------
 # 모델 (모듈 최초 사용 시 한 번만 로드)
@@ -68,12 +89,63 @@ def _get_model() -> "WhisperModel":
 # ---------------------------------------------------------------------------
 
 def transcribe_core(audio_path: str):
-    """오디오 경로를 받아 whisper segments 리스트와 전체 길이를 반환한다."""
+    """오디오 경로를 받아 whisper segments 리스트와 전체 길이를 반환한다.
+
+    vad_filter=True: 사람 목소리가 없는 구간은 모델에 넣지 않는다 (무음 환각 1차 방지).
+    잘라낸 구간이 있어도 faster-whisper가 단어 타임스탬프를 원본 오디오 시간으로
+    되돌려주므로, 침묵 구간·머뭇거림 지표 계산은 그대로 유지된다.
+    condition_on_previous_text=False: 앞에서 만든 문장을 따라 같은 말을
+    반복 생성하는 현상을 막는다.
+    """
     model = _get_model()
     segments, info = model.transcribe(
-        audio_path, language="ko", word_timestamps=True, beam_size=5
+        audio_path,
+        language="ko",
+        word_timestamps=True,
+        beam_size=5,
+        vad_filter=True,
+        condition_on_previous_text=False,
     )
-    return list(segments), info.duration
+    segments = _drop_hallucinated_segments(list(segments))
+    return segments, info.duration
+
+
+def _normalize_for_phrase_check(text: str) -> str:
+    """공백과 문장부호를 지워서 문구 비교가 띄어쓰기·마침표에 흔들리지 않게 한다."""
+    return "".join(ch for ch in text if ch.isalnum())
+
+
+def _is_hallucination_only(text: str) -> bool:
+    """전사 전체가 환각 문구로만 이루어졌는지 (예: "감사합니다. 감사합니다.")"""
+    remaining = _normalize_for_phrase_check(text)
+    if not remaining:
+        return False
+    for phrase in HALLUCINATION_PHRASES:  # 긴 문구부터 지우도록 목록 순서를 정해둠
+        remaining = remaining.replace(phrase, "")
+    return remaining == ""
+
+
+def _drop_hallucinated_segments(segments: list) -> list:
+    """무음 환각으로 보이는 세그먼트를 걸러낸다 (2차·3차 방지).
+
+    2차: 모델 스스로 "말소리 없음" 확률이 높고 확신도도 낮다고 본 세그먼트 제거.
+    3차: 남은 전사 전체가 환각 문구로만 이루어졌으면 전부 제거 → 빈 답변으로 처리.
+
+    테스트용 가짜 세그먼트처럼 no_speech_prob/avg_logprob 속성이 없는 경우에는
+    걸러내지 않고 그대로 둔다.
+    """
+    kept = []
+    for seg in segments:
+        no_speech = float(getattr(seg, "no_speech_prob", 0.0) or 0.0)
+        avg_logprob = float(getattr(seg, "avg_logprob", 0.0) or 0.0)
+        if no_speech > NO_SPEECH_PROB_THRESHOLD and avg_logprob < AVG_LOGPROB_THRESHOLD:
+            continue
+        kept.append(seg)
+
+    full_text = " ".join(getattr(seg, "text", "") for seg in kept)
+    if _is_hallucination_only(full_text):
+        return []
+    return kept
 
 
 # ---------------------------------------------------------------------------
@@ -266,6 +338,12 @@ def speech_score(metrics: dict) -> int:
     다른 키가 없거나 dict 형태만 맞으면 되므로, 캐시에서 꺼낸 과거 결과를
     그대로 넘겨도 동작한다.
     """
+    # 인식된 말이 하나도 없으면(무응답) 말하기 점수는 0.
+    # 이 처리가 없으면 머뭇거림 0 → 100점이 나와버린다.
+    # word_count가 없는 과거 캐시 결과는 기존 방식 그대로 계산한다.
+    if metrics.get("no_speech") or metrics.get("word_count", 1) == 0:
+        return 0
+
     hesitation = float(metrics.get("hesitation_score", 0.0))
     score = 100.0 - hesitation
 
@@ -358,6 +436,9 @@ def process_answer(
         "session_id": session_id,
         "question_id": question_id,
         "is_timeout": bool(is_timeout),
+        # 인식된 말이 전혀 없음 (침묵 또는 환각만 있던 답변).
+        # 내용 평가 쪽에서 "무응답"으로 처리할 때 쓸 수 있다.
+        "no_speech": speech_metrics["word_count"] == 0,
         **speech_metrics,
         **ending_metrics,
         **fluency_metrics,
