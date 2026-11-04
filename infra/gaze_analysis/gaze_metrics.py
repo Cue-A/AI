@@ -9,6 +9,9 @@
     드롭아웃은 모델 실패지 사용자 잘못이 아니므로, 응시유지비율/회피빈도 계산에서
     제외하고 별도의 데이터 품질 지표(dropout_rate)로만 남긴다.
 
+    답변 시작 직후에 끝나는 짧은 회피는 세지 않는다. 답변을 막 시작하며 질문을 마저
+    읽거나 화면을 확인하는 구간이지 면접 중의 시선 이탈이 아니다.
+
     회피 판정은 절대 임계값(yaw_threshold) 기준이다. 이 값은 Q2 촬영 영상으로
     캘리브레이션한 값(-0.15)을 기본값으로 쓰지만, 카메라 각도나 개인차에 따라
     달라질 수 있으므로 실제 서비스에서는 Q1(정면 유지 구간) 평균을 baseline으로
@@ -100,6 +103,7 @@ def compute_gaze_metrics(
     yaw_threshold: float = -0.15,
     min_aversion_duration: float = 1.0,
     merge_gap_sec: float = 2.0,
+    start_grace_sec: float = 2.0,
 ) -> GazeMetrics:
     """
     frames: extract_l2cs_gaze_warm() 등이 반환하는 프레임 리스트 (5fps 다운샘플링된 것 권장)
@@ -117,7 +121,7 @@ def compute_gaze_metrics(
 
     raw_windows = _detect_raw_dips(frames, yaw_threshold)
     merged = _merge_close(raw_windows, merge_gap_sec)
-    filtered = _filter_short(merged, min_aversion_duration)
+    filtered = [w for w in _filter_short(merged, min_aversion_duration) if w[1] > start_grace_sec]
 
     events = [AversionEvent(t_start=round(s, 2), t_end=round(e, 2)) for s, e in filtered]
 

@@ -162,7 +162,7 @@ class Axes(BaseModel):
 class Overall(BaseModel):
     score: int          # 0~100. 게이트 적용 후 최종값
     display: int        # 1~5
-    gated: bool         # 적절성 게이트가 발동했는가
+    gated: bool         # 상한 때문에 총점이 실제로 깎였는가
     gate_reason: Optional[str] = None
     partial: bool       # 실패한 축이 있는가
     axes_used: list[Axis]
