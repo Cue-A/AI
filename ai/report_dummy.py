@@ -561,9 +561,8 @@ def _length(row, measured: Optional[Measured]) -> tuple[int, int]:
 
 def _transcript(row, transcripts: Optional[dict[str, str]], reasks=()) -> str:
     if transcripts:
-        text = _answer_text(row, transcripts, reasks)
-        if text:
-            return text
+        # 말이 없던 답변은 빈 문자열이다. 더미 문장을 넣으면 답한 것처럼 보인다.
+        return _answer_text(row, transcripts, reasks)
     return f"(더미 전사) {row.text} 에 대한 답변입니다."
 
 
@@ -605,6 +604,8 @@ def build_report(
     for r in rows:
         picked = {a: per_question[r.question_id][a] for a in usable}
         q_score = round(sum(picked[a] * weights[a] for a in usable))
+        # 총점과 같은 상한을 문항에도 건다. 안 걸면 내용 0점인 답도 말하기 · 시선만으로 40점대가 된다.
+        q_score, _, _ = apply_gate(q_score, picked.get("content"))
 
         duration, words = _length(r, measured)
         for reask in extra.get(r.question_id, []):

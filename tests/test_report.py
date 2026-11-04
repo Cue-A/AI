@@ -4,6 +4,7 @@
 FastAPI TestClient로 실제 HTTP 요청을 보낸다.
 """
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -12,6 +13,7 @@ from ai.report_dummy import (
     GATE_PARTIAL_THRESHOLD,
     GATE_SEVERE_CAP,
     GATE_SEVERE_THRESHOLD,
+    _transcript,
     apply_gate,
 )
 from ai.report_schemas import (
@@ -942,3 +944,40 @@ def test_두_축이_모두_실패하면_content만_남는다(client, auth):
     assert result["overall"]["axes_used"] == ["content"]
     # 남은 축이 하나면 그 점수가 그대로 총점이 된다
     assert result["overall"]["score"] == result["axes"]["content"]["score"]
+
+
+# ---------------------------------------------------------------------------
+# 테스터 피드백 — 문항 점수 상한 · 무응답 전사
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("audio, cap", [("offtopic", GATE_SEVERE_CAP), ("partial", GATE_PARTIAL_CAP)])
+def test_문항_점수에도_내용_상한이_걸린다(client, auth, audio, cap):
+    result, _ = make_report(client, auth, six_answers(audio=audio))
+    for q in result["questions"]:
+        assert q["score"] <= cap, q
+        assert q["display"] == display_of(q["score"])
+
+
+def test_내용이_충분한_문항은_상한을_받지_않는다(client, auth):
+    result, _ = make_report(client, auth, six_answers())
+    weights = {"content": 0.5, "speech": 0.25, "gaze": 0.25}
+    for q in result["questions"]:
+        assert q["axes"]["content"] >= GATE_PARTIAL_THRESHOLD
+        assert q["score"] == round(sum(q["axes"][a] * w for a, w in weights.items()))
+
+
+def test_말이_없던_답변의_전사는_비어_있다():
+    row = SimpleNamespace(question_id="q_1", text="1번 질문")
+    assert _transcript(row, {"q_1": "", "q_2": "답변"}) == ""
+
+
+def test_되묻기에만_답해도_전사가_남는다():
+    row = SimpleNamespace(question_id="q_1", text="1번 질문")
+    reask = SimpleNamespace(question_id="q_1r")
+    assert _transcript(row, {"q_1": "", "q_1r": "다시 답변"}, [reask]) == "다시 답변"
+
+
+def test_전사를_쓰지_않는_더미_모드는_더미_문장을_유지한다():
+    row = SimpleNamespace(question_id="q_1", text="1번 질문")
+    assert "더미 전사" in _transcript(row, None)
