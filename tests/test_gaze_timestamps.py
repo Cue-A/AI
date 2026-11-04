@@ -55,7 +55,8 @@ def extract(monkeypatch):
             t = self.calls * 6 / 30
             self.calls += 1
             yaw = -0.4 if 10 <= t <= 20 else 0.0
-            return types.SimpleNamespace(yaw=[yaw], pitch=[0.0])
+            # L2CS 출력은 이름이 반대: 좌우(yaw)는 result.pitch에 담긴다
+            return types.SimpleNamespace(pitch=[yaw], yaw=[0.0])
 
     l2cs.Pipeline = Pipeline
     monkeypatch.setitem(sys.modules, "torch", torch)

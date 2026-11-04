@@ -71,8 +71,10 @@ def extract_l2cs_gaze_warm(
             try:
                 result = pipeline.step(frame)
                 if result is not None and len(result.pitch) > 0:
-                    yaw = float(result.yaw[0])
-                    pitch = float(result.pitch[0])
+                    # L2CS-Net은 이름이 반대로 붙어 있다 (l2cs/vis.py draw_gaze 참고):
+                    # result.pitch = 좌우(실제 yaw), result.yaw = 위아래(실제 pitch)
+                    yaw = float(result.pitch[0])
+                    pitch = float(result.yaw[0])
                 else:
                     yaw, pitch = None, None
             except Exception:
