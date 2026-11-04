@@ -792,6 +792,11 @@ def test_게이트_경계는_30과_50이다(content, expected_cap):
         assert score == expected_cap
 
 
+@pytest.mark.parametrize("overall, content", [(56, 39), (70, 40), (35, 20), (40, 20)])
+def test_게이트_상한_이하_총점은_깎이지_않아_gated가_아니다(overall, content):
+    assert apply_gate(overall, content) == (overall, False, None)
+
+
 def test_게이트_경계값이_서로_어긋나지_않는다():
     """임계와 상한을 따로 고치다 순서가 뒤집히면 조용히 이상해진다."""
     assert GATE_SEVERE_THRESHOLD < GATE_PARTIAL_THRESHOLD
@@ -922,7 +927,7 @@ def test_speech_실패는_content로_게이트를_계속_판단한다(client, au
         [answer(n, audio="offtopic_fail") for n in range(1, 4)],
     )
     assert result["overall"]["axes_failed"] == ["speech"]
-    assert result["overall"]["gated"] is True
+    assert result["axes"]["content"]["score"] < GATE_SEVERE_THRESHOLD
     assert result["overall"]["score"] <= GATE_SEVERE_CAP
 
 

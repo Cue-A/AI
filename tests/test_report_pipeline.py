@@ -175,7 +175,7 @@ def test_채점기를_꽂으면_전사_텍스트로_점수가_난다(
     body = make(client, auth, six_answers())
 
     assert body["result"]["axes"]["content"]["score"] == 12
-    assert body["result"]["overall"]["gated"] is True
+    assert body["result"]["overall"]["score"] <= 40
     assert real_scorer, "채점기가 불리지 않았습니다"
 
     question_text, answer_text = real_scorer[0]
@@ -214,7 +214,7 @@ def test_말이_없는_답변은_내용_0점이다(client, auth, llm_mode):
 
     assert body["status"] == "done"
     assert body["result"]["axes"]["content"]["score"] == 0
-    assert body["result"]["overall"]["gated"] is True
+    assert body["result"]["overall"]["score"] <= 40
 
 
 def test_채점기가_없으면_더미_트리거가_그대로_돈다(client, auth, llm_mode, fake_stt):

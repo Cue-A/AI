@@ -197,13 +197,14 @@ def offtopic_score_for(*parts: str) -> int:
 
 
 def partial_offtopic_score_for(*parts: str) -> int:
-    """부분 이탈 답변의 내용 점수. 30~49로 두 임계 사이에 둔다.
+    """부분 이탈 답변의 내용 점수. 41~49로 두 임계 사이에 둔다.
 
     질문의 핵심을 살짝 비껴간 답변이다. 완전 이탈은 아니므로 상한 40이 아니라
     상한 70이 걸린다. 이 트리거가 없으면 백엔드가 70 상한을 한 번도 못 본다.
+    말하기 · 시선을 만점으로 두는 쪽과 합쳐야 총점이 70을 넘어 상한이 실제로 걸린다.
     """
     digest = hashlib.sha256("|".join(parts).encode("utf-8")).digest()
-    return 30 + digest[0] % 20
+    return 41 + digest[0] % 9
 
 
 def apply_gate(overall_score: int, content_score: Optional[int]) -> tuple[int, bool, Optional[str]]:
@@ -213,16 +214,16 @@ def apply_gate(overall_score: int, content_score: Optional[int]) -> tuple[int, b
     세트 1 A(완전 이탈) -> Severe Cap (40점)
     세트 2 D(부분 이탈) -> Partial Cap (70점)
 
-    반환값은 (총점, gated, gate_reason)이다.
+    반환값은 (총점, gated, gate_reason)이다. gated는 상한 때문에 점수가 깎였을 때만 true다.
     """
     if content_score is None or content_score >= GATE_PARTIAL_THRESHOLD:
         return overall_score, False, None
     
-    if content_score < GATE_SEVERE_THRESHOLD:
-        return min(overall_score, GATE_SEVERE_CAP), True, GATE_REASON
-    
-    # Partial off-topic
-    return min(overall_score, GATE_PARTIAL_CAP), True, GATE_REASON
+    # 완전 이탈 40, 부분 이탈 70. 상한 아래면 깎인 게 없으므로 gated가 아니다.
+    cap = GATE_SEVERE_CAP if content_score < GATE_SEVERE_THRESHOLD else GATE_PARTIAL_CAP
+    if overall_score <= cap:
+        return overall_score, False, None
+    return cap, True, GATE_REASON
 
 
 def _now() -> str:
@@ -598,6 +599,7 @@ def build_report(
             scores["content"] = offtopic_score_for(session_id, r.question_id)
         elif partial_offtopic:
             scores["content"] = partial_offtopic_score_for(session_id, r.question_id)
+            scores["speech"] = scores["gaze"] = 100
         per_question[r.question_id] = scores
 
     questions: list[QuestionScore] = []
