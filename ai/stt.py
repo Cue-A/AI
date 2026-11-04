@@ -50,6 +50,15 @@ CACHE_DIR = os.environ.get("STT_CACHE_DIR", "./stt_cache")
 NO_SPEECH_PROB_THRESHOLD = 0.6
 AVG_LOGPROB_THRESHOLD = -1.0
 
+# VAD(목소리 구간만 골라내기) 설정. 작게 말한 답변이 잘리면 서버 재시작만으로 조정할 수 있게
+# 환경변수로 뺐다.
+#   STT_VAD=0                 VAD 끄기 (문제 생기면 즉시 원래 동작으로 되돌리는 스위치)
+#   STT_VAD_THRESHOLD=0.35    목소리로 판단하는 기준. 낮을수록 작은 소리도 살린다 (기본 0.5)
+STT_VAD = os.environ.get("STT_VAD", "1") != "0"
+STT_VAD_THRESHOLD = float(os.environ.get("STT_VAD_THRESHOLD", "0.5"))
+# 목소리 구간 앞뒤로 남겨두는 여유(ms). 말 첫머리·끝머리가 잘리지 않게 한다.
+STT_VAD_SPEECH_PAD_MS = int(os.environ.get("STT_VAD_SPEECH_PAD_MS", "400"))
+
 # 이 문구들"만"으로 이루어진 전사는 환각으로 보고 빈 답변 처리한다.
 # 실제 답변 끝의 "감사합니다"는 다른 내용과 함께 나오므로 지워지지 않는다.
 HALLUCINATION_PHRASES = [
@@ -88,8 +97,8 @@ def _get_model() -> "WhisperModel":
 # 1. 전사
 # ---------------------------------------------------------------------------
 
-def transcribe_core(audio_path: str):
-    """오디오 경로를 받아 whisper segments 리스트와 전체 길이를 반환한다.
+def transcribe_core(audio_path):
+    """오디오 경로(또는 16kHz float32 배열)를 받아 whisper segments 리스트와 전체 길이를 반환한다.
 
     vad_filter=True: 사람 목소리가 없는 구간은 모델에 넣지 않는다 (무음 환각 1차 방지).
     잘라낸 구간이 있어도 faster-whisper가 단어 타임스탬프를 원본 오디오 시간으로
@@ -103,7 +112,11 @@ def transcribe_core(audio_path: str):
         language="ko",
         word_timestamps=True,
         beam_size=5,
-        vad_filter=True,
+        vad_filter=STT_VAD,
+        vad_parameters=(
+            {"threshold": STT_VAD_THRESHOLD, "speech_pad_ms": STT_VAD_SPEECH_PAD_MS}
+            if STT_VAD else None
+        ),
         condition_on_previous_text=False,
     )
     segments = _drop_hallucinated_segments(list(segments))

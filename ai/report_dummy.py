@@ -422,6 +422,11 @@ def _real_evidence(axis: str, rows, measured: Measured) -> list[Evidence]:
 
 
 def _speech_score(row, measured: Optional[Measured]) -> Optional[int]:
+    # 인식된 말이 하나도 없으면(무응답) 말하기 점수는 0.
+    # 머뭇거림은 단어 사이 간격으로 계산하므로, 단어가 없으면 0이 나와 오히려 고득점이 된다.
+    heard = measured.heard.get(row.question_id) if measured else None
+    if heard is not None and heard.word_count == 0:
+        return 0
     fluency = _fluency_of(row, measured)
     if not fluency:
         return None
