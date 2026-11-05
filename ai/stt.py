@@ -14,6 +14,7 @@ process_answer() 하나만 호출하면 된다.
 """
 
 import os
+import re
 import json
 from typing import TYPE_CHECKING
 
@@ -41,6 +42,44 @@ SPEECH_SILENT_ENDING_PENALTY = 7  # 거기에 더해 끝에 긴 침묵까지 있
 # 배포 환경마다 다를 수 있어서 환경변수로 오버라이드 가능하게 해둠.
 CACHE_DIR = os.environ.get("STT_CACHE_DIR", "./stt_cache")
 
+# 무음 환각 방지 설정.
+# Whisper는 무음·잡음만 있는 오디오를 "감사합니다", "시청해 주셔서 감사합니다" 같은
+# 문장으로 채우는 경우가 있다 (학습 데이터의 영상 자막 영향). 11/3 실서비스 테스트에서
+# 60초 동안 아무 말도 안 한 답변이 "감사합니다." x4로 전사되어 내용 평가가 잘못된 것을 확인.
+# 세그먼트 신뢰도 기준은 Whisper 원본의 무음 판정 규칙(no_speech > 0.6 이면서
+# avg_logprob < -1.0)과 같은 값을 쓴다.
+NO_SPEECH_PROB_THRESHOLD = 0.6
+AVG_LOGPROB_THRESHOLD = -1.0
+
+# VAD(목소리 구간만 골라내기) 설정. 작게 말한 답변이 잘리면 서버 재시작만으로 조정할 수 있게
+# 환경변수로 뺐다.
+#   STT_VAD=0                 VAD 끄기 (문제 생기면 즉시 원래 동작으로 되돌리는 스위치)
+#   STT_VAD_THRESHOLD=0.35    목소리로 판단하는 기준. 낮을수록 작은 소리도 살린다 (기본 0.5)
+STT_VAD = os.environ.get("STT_VAD", "1") != "0"
+STT_VAD_THRESHOLD = float(os.environ.get("STT_VAD_THRESHOLD", "0.5"))
+# 목소리 구간 앞뒤로 남겨두는 여유(ms). 말 첫머리·끝머리가 잘리지 않게 한다.
+STT_VAD_SPEECH_PAD_MS = int(os.environ.get("STT_VAD_SPEECH_PAD_MS", "400"))
+
+# 필러 토큰. 머뭇거림 지표는 "Whisper가 필러를 지우고, 그 시간은 단어 사이 침묵에
+# 들어간다"는 전제로 설계했다. 그런데 Whisper가 필러를 가끔 "음.."처럼 받아쓰면
+# 같은 머뭇거림이 침묵이 아니라 단어로 잡혀 점수가 흔들린다 (VAD 비교에서 q3_short
+# 머뭇거림이 26.4 → 16.5). 그래서 필러 토큰은 단어로 치지 않고 침묵으로 계산한다.
+# 문장부호를 뗀 뒤 이 음절로만 이루어진 토큰만 필러로 본다. "그", "저" 같은
+# 뜻이 있는 말은 넣지 않는다 ("그 프로젝트", "저는"이 지워지면 안 되므로).
+FILLER_RE = re.compile(r"^(음|엄|흠|어|으|에|아)+$")
+
+# 이 문구들"만"으로 이루어진 전사는 환각으로 보고 빈 답변 처리한다.
+# 실제 답변 끝의 "감사합니다"는 다른 내용과 함께 나오므로 지워지지 않는다.
+HALLUCINATION_PHRASES = [
+    "시청해주셔서감사합니다",
+    "시청해주셔서고맙습니다",
+    "구독과좋아요부탁드립니다",
+    "구독과좋아요",
+    "다음영상에서만나요",
+    "감사합니다",
+    "고맙습니다",
+]
+
 
 # ---------------------------------------------------------------------------
 # 모델 (모듈 최초 사용 시 한 번만 로드)
@@ -67,13 +106,68 @@ def _get_model() -> "WhisperModel":
 # 1. 전사
 # ---------------------------------------------------------------------------
 
-def transcribe_core(audio_path: str):
-    """오디오 경로를 받아 whisper segments 리스트와 전체 길이를 반환한다."""
+def transcribe_core(audio_path):
+    """오디오 경로(또는 16kHz float32 배열)를 받아 whisper segments 리스트와 전체 길이를 반환한다.
+
+    vad_filter=True: 사람 목소리가 없는 구간은 모델에 넣지 않는다 (무음 환각 1차 방지).
+    잘라낸 구간이 있어도 faster-whisper가 단어 타임스탬프를 원본 오디오 시간으로
+    되돌려주므로, 침묵 구간·머뭇거림 지표 계산은 그대로 유지된다.
+    condition_on_previous_text=False: 앞에서 만든 문장을 따라 같은 말을
+    반복 생성하는 현상을 막는다.
+    """
     model = _get_model()
     segments, info = model.transcribe(
-        audio_path, language="ko", word_timestamps=True, beam_size=5
+        audio_path,
+        language="ko",
+        word_timestamps=True,
+        beam_size=5,
+        vad_filter=STT_VAD,
+        vad_parameters=(
+            {"threshold": STT_VAD_THRESHOLD, "speech_pad_ms": STT_VAD_SPEECH_PAD_MS}
+            if STT_VAD else None
+        ),
+        condition_on_previous_text=False,
     )
-    return list(segments), info.duration
+    segments = _drop_hallucinated_segments(list(segments))
+    return segments, info.duration
+
+
+def _normalize_for_phrase_check(text: str) -> str:
+    """공백과 문장부호를 지워서 문구 비교가 띄어쓰기·마침표에 흔들리지 않게 한다."""
+    return "".join(ch for ch in text if ch.isalnum())
+
+
+def _is_hallucination_only(text: str) -> bool:
+    """전사 전체가 환각 문구로만 이루어졌는지 (예: "감사합니다. 감사합니다.")"""
+    remaining = _normalize_for_phrase_check(text)
+    if not remaining:
+        return False
+    for phrase in HALLUCINATION_PHRASES:  # 긴 문구부터 지우도록 목록 순서를 정해둠
+        remaining = remaining.replace(phrase, "")
+    return remaining == ""
+
+
+def _drop_hallucinated_segments(segments: list) -> list:
+    """무음 환각으로 보이는 세그먼트를 걸러낸다 (2차·3차 방지).
+
+    2차: 모델 스스로 "말소리 없음" 확률이 높고 확신도도 낮다고 본 세그먼트 제거.
+    3차: 남은 전사 전체가 환각 문구로만 이루어졌으면 전부 제거 → 빈 답변으로 처리.
+
+    테스트용 가짜 세그먼트처럼 no_speech_prob/avg_logprob 속성이 없는 경우에는
+    걸러내지 않고 그대로 둔다.
+    """
+    kept = []
+    for seg in segments:
+        no_speech = float(getattr(seg, "no_speech_prob", 0.0) or 0.0)
+        avg_logprob = float(getattr(seg, "avg_logprob", 0.0) or 0.0)
+        if no_speech > NO_SPEECH_PROB_THRESHOLD and avg_logprob < AVG_LOGPROB_THRESHOLD:
+            continue
+        kept.append(seg)
+
+    full_text = " ".join(getattr(seg, "text", "") for seg in kept)
+    if _is_hallucination_only(full_text):
+        return []
+    return kept
 
 
 # ---------------------------------------------------------------------------
@@ -81,12 +175,27 @@ def transcribe_core(audio_path: str):
 # (발화시간·어절수는 A의 길이 게이트에도 쓰이므로 우선순위 높음)
 # ---------------------------------------------------------------------------
 
+def _is_filler(token: str) -> bool:
+    """'음', '어..', '음음' 처럼 필러 음절로만 이루어진 토큰인가."""
+    core = _normalize_for_phrase_check(token or "")
+    return bool(core) and FILLER_RE.match(core) is not None
+
+
+def _content_words(segments) -> list:
+    """필러를 뺀 단어 객체 목록. 침묵·종결·유창성 계산이 공통으로 쓴다."""
+    return [
+        w for seg in segments for w in seg.words
+        if not _is_filler(getattr(w, "word", "") or "")
+    ]
+
+
 def compute_speech_metrics(segments, silence_threshold: float = SILENCE_THRESHOLD) -> dict:
     full_text = " ".join(seg.text for seg in segments).strip()
-    word_times = [(float(w.start), float(w.end)) for seg in segments for w in seg.words]
+    # 필러는 단어로 치지 않는다. 필러가 차지한 시간은 앞뒤 단어 사이 간격, 즉 침묵에 들어간다.
+    word_times = [(float(w.start), float(w.end)) for w in _content_words(segments)]
 
     speech_duration = (word_times[-1][1] - word_times[0][0]) if word_times else 0.0
-    word_count = len(full_text.split())
+    word_count = sum(1 for tok in full_text.split() if not _is_filler(tok))
 
     silences = [
         {
@@ -124,10 +233,15 @@ def compute_speech_metrics(segments, silence_threshold: float = SILENCE_THRESHOL
 def compute_ending_metrics(full_text: str, segments, audio_duration: float) -> dict:
     text_stripped = full_text.strip()
     # Whisper가 붙이거나 안 붙이거나 하는 문장부호는 종결 판정에서 무시한다.
-    text_for_ending_check = text_stripped.rstrip(".!?~…‥ ")
+    # 끝에 붙은 필러("…그렇습니다 음..")는 종결 판정에서 빼고 본다.
+    tokens = text_stripped.split()
+    while tokens and _is_filler(tokens[-1]):
+        tokens.pop()
+    text_for_ending_check = " ".join(tokens).rstrip(".!?~…‥ ")
     is_concluded = bool(any(text_for_ending_check.endswith(p) for p in ENDING_PATTERNS))
 
-    all_words = [w for seg in segments for w in seg.words]
+    # 마지막 필러 뒤가 아니라 마지막 실제 단어 뒤부터를 끝 침묵으로 본다.
+    all_words = _content_words(segments)
     last_word_end = float(all_words[-1].end) if all_words else 0.0
     trailing_silence = float(audio_duration) - last_word_end
 
@@ -171,7 +285,8 @@ def _extract_words(segments):
     for seg in segments:
         for w in seg.words:
             text = w.word.strip()
-            if text:
+            # 필러는 빼야 "음 음"이 반복으로 잡히지 않고, 필러 시간이 침묵 쪽에 남는다
+            if text and not _is_filler(text):
                 words.append((text, float(w.start), float(w.end)))
     return words
 
@@ -266,6 +381,12 @@ def speech_score(metrics: dict) -> int:
     다른 키가 없거나 dict 형태만 맞으면 되므로, 캐시에서 꺼낸 과거 결과를
     그대로 넘겨도 동작한다.
     """
+    # 인식된 말이 하나도 없으면(무응답) 말하기 점수는 0.
+    # 이 처리가 없으면 머뭇거림 0 → 100점이 나와버린다.
+    # word_count가 없는 과거 캐시 결과는 기존 방식 그대로 계산한다.
+    if metrics.get("no_speech") or metrics.get("word_count", 1) == 0:
+        return 0
+
     hesitation = float(metrics.get("hesitation_score", 0.0))
     score = 100.0 - hesitation
 
@@ -358,6 +479,9 @@ def process_answer(
         "session_id": session_id,
         "question_id": question_id,
         "is_timeout": bool(is_timeout),
+        # 인식된 말이 전혀 없음 (침묵 또는 환각만 있던 답변).
+        # 내용 평가 쪽에서 "무응답"으로 처리할 때 쓸 수 있다.
+        "no_speech": speech_metrics["word_count"] == 0,
         **speech_metrics,
         **ending_metrics,
         **fluency_metrics,
